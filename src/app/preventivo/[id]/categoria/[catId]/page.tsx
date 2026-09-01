@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { calcolaPrezzoRiga } from "@/lib/calcolo-prezzo";
 import { createSupabaseClient } from "@/lib/supabase";
@@ -71,19 +71,159 @@ function normalizzaRelazione<T>(val: T | T[]): T {
   return Array.isArray(val) ? val[0] : val;
 }
 
+function buildFlagStateFromIds(
+  gruppi: GruppoFlag[],
+  flagIds: number[],
+): {
+  esclusivi: Record<number, string>;
+  multipli: Record<number, boolean>;
+} {
+  const esclusivi: Record<number, string> = {};
+  const multipli: Record<number, boolean> = {};
+
+  for (const gruppo of gruppi) {
+    if (gruppo.esclusivo) {
+      const match = gruppo.flag_supplementi.find((f) => flagIds.includes(f.id));
+      if (match) esclusivi[gruppo.id] = String(match.id);
+    } else {
+      for (const flag of gruppo.flag_supplementi) {
+        if (flagIds.includes(flag.id)) multipli[flag.id] = true;
+      }
+    }
+  }
+
+  return { esclusivi, multipli };
+}
+
+function parseMisureForm(
+  prodotto: Prodotto,
+  larghezza: string,
+  altezza: string,
+  lunghezza: string,
+): {
+  valid: boolean;
+  larghezzaCm: number | null;
+  altezzaCm: number | null;
+  lunghezzaCm: number | null;
+} {
+  if (prodotto.tipo_prezzo === "mq") {
+    const larghezzaNum = Number(larghezza);
+    const altezzaNum = Number(altezza);
+    if (
+      !Number.isFinite(larghezzaNum) ||
+      !Number.isFinite(altezzaNum) ||
+      larghezzaNum <= 0 ||
+      altezzaNum <= 0
+    ) {
+      return {
+        valid: false,
+        larghezzaCm: null,
+        altezzaCm: null,
+        lunghezzaCm: null,
+      };
+    }
+    return {
+      valid: true,
+      larghezzaCm: larghezzaNum,
+      altezzaCm: altezzaNum,
+      lunghezzaCm: null,
+    };
+  }
+
+  if (prodotto.tipo_prezzo === "ml") {
+    const lunghezzaNum = Number(lunghezza);
+    if (!Number.isFinite(lunghezzaNum) || lunghezzaNum <= 0) {
+      return {
+        valid: false,
+        larghezzaCm: null,
+        altezzaCm: null,
+        lunghezzaCm: null,
+      };
+    }
+    return {
+      valid: true,
+      larghezzaCm: null,
+      altezzaCm: null,
+      lunghezzaCm: lunghezzaNum,
+    };
+  }
+
+  return {
+    valid: true,
+    larghezzaCm: null,
+    altezzaCm: null,
+    lunghezzaCm: null,
+  };
+}
+
+function popolaFormDaRiga(
+  riga: RigaSalvata,
+  gruppi: GruppoFlag[],
+  setters: {
+    setProdottoId: (v: string) => void;
+    setLarghezza: (v: string) => void;
+    setAltezza: (v: string) => void;
+    setLunghezza: (v: string) => void;
+    setQuantita: (v: string) => void;
+    setPosa: (v: boolean) => void;
+    setFlagEsclusivi: (v: Record<number, string>) => void;
+    setFlagMultipli: (v: Record<number, boolean>) => void;
+  },
+) {
+  setters.setProdottoId(String(riga.prodotto_id));
+  setters.setLarghezza(
+    riga.larghezza_cm != null ? String(riga.larghezza_cm) : "",
+  );
+  setters.setAltezza(riga.altezza_cm != null ? String(riga.altezza_cm) : "");
+  setters.setLunghezza(
+    riga.lunghezza_cm != null ? String(riga.lunghezza_cm) : "",
+  );
+  setters.setQuantita(String(riga.quantita));
+  setters.setPosa(riga.posa);
+
+  const flagIds = riga.righe_flag.map((rf) => rf.flag_id);
+  const { esclusivi, multipli } = buildFlagStateFromIds(gruppi, flagIds);
+  setters.setFlagEsclusivi(esclusivi);
+  setters.setFlagMultipli(multipli);
+}
+
+function resetCampiProdotto(
+  setLarghezza: (v: string) => void,
+  setAltezza: (v: string) => void,
+  setLunghezza: (v: string) => void,
+  setPosa: (v: boolean) => void,
+  setFlagEsclusivi: (v: Record<number, string>) => void,
+  setFlagMultipli: (v: Record<number, boolean>) => void,
+) {
+  setLarghezza("");
+  setAltezza("");
+  setLunghezza("");
+  setPosa(false);
+  setFlagEsclusivi({});
+  setFlagMultipli({});
+}
+
 export default function PreventivoCategoriaPage() {
   const params = useParams<{ id: string; catId: string }>();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const preventivoId = params.id;
   const categoriaId = params.catId;
+  const rigaDaUrl = searchParams.get("riga");
 
   const [riferimento, setRiferimento] = useState<string | null>(null);
   const [nomeCategoria, setNomeCategoria] = useState<string | null>(null);
   const [prodotti, setProdotti] = useState<Prodotto[]>([]);
   const [gruppiFlag, setGruppiFlag] = useState<GruppoFlag[]>([]);
   const [righe, setRighe] = useState<RigaSalvata[]>([]);
+  const [editingRigaId, setEditingRigaId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
+  const [totalePreventivo, setTotalePreventivo] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  const [ricercaProdotto, setRicercaProdotto] = useState("");
 
   const [prodottoId, setProdottoId] = useState("");
   const [larghezza, setLarghezza] = useState("");
@@ -96,10 +236,29 @@ export default function PreventivoCategoriaPage() {
   );
   const [flagMultipli, setFlagMultipli] = useState<Record<number, boolean>>({});
 
+  const isModifica = editingRigaId !== null;
+
+  const formSetters = {
+    setProdottoId,
+    setLarghezza,
+    setAltezza,
+    setLunghezza,
+    setQuantita,
+    setPosa,
+    setFlagEsclusivi,
+    setFlagMultipli,
+  };
+
   const prodottoSelezionato = useMemo(
     () => prodotti.find((p) => String(p.id) === prodottoId),
     [prodotti, prodottoId],
   );
+
+  const prodottiFiltrati = useMemo(() => {
+    const query = ricercaProdotto.trim().toLowerCase();
+    if (!query) return prodotti;
+    return prodotti.filter((p) => p.nome.toLowerCase().includes(query));
+  }, [prodotti, ricercaProdotto]);
 
   const flagAttivi = useMemo(() => {
     const attivi: FlagSupplemento[] = [];
@@ -147,7 +306,29 @@ export default function PreventivoCategoriaPage() {
     }));
 
     setRighe(righeNormalizzate);
+    return righeNormalizzate;
   }, [preventivoId, categoriaId]);
+
+  const loadTotalePreventivo = useCallback(async () => {
+    const supabase = createSupabaseClient();
+    const { data, error: totaleError } = await supabase
+      .from("righe")
+      .select("prezzo_riga")
+      .eq("preventivo_id", preventivoId);
+
+    if (totaleError) throw new Error(totaleError.message);
+
+    const totale = (data ?? []).reduce(
+      (sum, riga) => sum + (riga.prezzo_riga ?? 0),
+      0,
+    );
+    setTotalePreventivo(totale);
+    return totale;
+  }, [preventivoId]);
+
+  const refreshTotali = useCallback(async () => {
+    await Promise.all([loadRighe(), loadTotalePreventivo()]);
+  }, [loadRighe, loadTotalePreventivo]);
 
   useEffect(() => {
     async function loadData() {
@@ -207,7 +388,17 @@ export default function PreventivoCategoriaPage() {
         setNomeCategoria(categoriaResult.data.nome);
         setProdotti(prodottiResult.data as Prodotto[]);
         setGruppiFlag(gruppiNormalizzati);
-        await loadRighe();
+        const righeCaricate = await loadRighe();
+        await loadTotalePreventivo();
+
+        if (rigaDaUrl) {
+          const riga = righeCaricate.find((r) => String(r.id) === rigaDaUrl);
+          if (riga) {
+            setEditingRigaId(riga.id);
+            popolaFormDaRiga(riga, gruppiNormalizzati, formSetters);
+            setRicercaProdotto(riga.prodotti.nome);
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Errore sconosciuto");
       } finally {
@@ -216,16 +407,7 @@ export default function PreventivoCategoriaPage() {
     }
 
     loadData();
-  }, [preventivoId, categoriaId, loadRighe]);
-
-  useEffect(() => {
-    setLarghezza("");
-    setAltezza("");
-    setLunghezza("");
-    setPosa(false);
-    setFlagEsclusivi({});
-    setFlagMultipli({});
-  }, [prodottoId]);
+  }, [preventivoId, categoriaId, loadRighe, loadTotalePreventivo, rigaDaUrl]);
 
   const prezzoAnteprima = useMemo(() => {
     if (!prodottoSelezionato) return null;
@@ -233,34 +415,21 @@ export default function PreventivoCategoriaPage() {
     const quantitaNum = Number(quantita);
     if (!Number.isFinite(quantitaNum) || quantitaNum <= 0) return null;
 
-    let larghezzaCm: number | null = null;
-    let altezzaCm: number | null = null;
-    let lunghezzaCm: number | null = null;
-
-    if (prodottoSelezionato.tipo_prezzo === "mq") {
-      const larghezzaNum = Number(larghezza);
-      const altezzaNum = Number(altezza);
-      if (
-        !Number.isFinite(larghezzaNum) ||
-        !Number.isFinite(altezzaNum) ||
-        larghezzaNum <= 0 ||
-        altezzaNum <= 0
-      ) {
-        return null;
-      }
-      larghezzaCm = larghezzaNum;
-      altezzaCm = altezzaNum;
-    }
-
-    if (prodottoSelezionato.tipo_prezzo === "ml") {
-      const lunghezzaNum = Number(lunghezza);
-      if (!Number.isFinite(lunghezzaNum) || lunghezzaNum <= 0) return null;
-      lunghezzaCm = lunghezzaNum;
-    }
+    const misure = parseMisureForm(
+      prodottoSelezionato,
+      larghezza,
+      altezza,
+      lunghezza,
+    );
+    if (!misure.valid) return null;
 
     return calcolaPrezzoRiga(
       prodottoSelezionato,
-      { larghezza_cm: larghezzaCm, altezza_cm: altezzaCm, lunghezza_cm: lunghezzaCm },
+      {
+        larghezza_cm: misure.larghezzaCm,
+        altezza_cm: misure.altezzaCm,
+        lunghezza_cm: misure.lunghezzaCm,
+      },
       quantitaNum,
       posa,
       flagAttivi,
@@ -282,6 +451,7 @@ export default function PreventivoCategoriaPage() {
 
   function resetForm() {
     setProdottoId("");
+    setRicercaProdotto("");
     setLarghezza("");
     setAltezza("");
     setLunghezza("");
@@ -289,39 +459,120 @@ export default function PreventivoCategoriaPage() {
     setPosa(false);
     setFlagEsclusivi({});
     setFlagMultipli({});
+    setEditingRigaId(null);
   }
 
-  async function handleAggiungiRiga() {
+  function selezionaProdotto(prodotto: Prodotto) {
+    setProdottoId(String(prodotto.id));
+    setRicercaProdotto(prodotto.nome);
+    resetCampiProdotto(
+      setLarghezza,
+      setAltezza,
+      setLunghezza,
+      setPosa,
+      setFlagEsclusivi,
+      setFlagMultipli,
+    );
+  }
+
+  function handleModificaRiga(riga: RigaSalvata) {
+    setEditingRigaId(riga.id);
+    popolaFormDaRiga(riga, gruppiFlag, formSetters);
+    setRicercaProdotto(riga.prodotti.nome);
+    setError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handleAnnullaModifica() {
+    resetForm();
+    router.replace(`/preventivo/${preventivoId}/categoria/${categoriaId}`);
+  }
+
+  async function aggiornaFlagRiga(rigaId: number) {
+    const supabase = createSupabaseClient();
+
+    const { error: flagDeleteError } = await supabase
+      .from("righe_flag")
+      .delete()
+      .eq("riga_id", rigaId);
+
+    if (flagDeleteError) throw new Error(flagDeleteError.message);
+
+    if (flagAttivi.length > 0) {
+      const { error: flagError } = await supabase.from("righe_flag").insert(
+        flagAttivi.map((flag) => ({
+          riga_id: rigaId,
+          flag_id: flag.id,
+        })),
+      );
+
+      if (flagError) throw new Error(flagError.message);
+    }
+  }
+
+  async function handleSalvaRiga() {
     if (!prodottoSelezionato || prezzoAnteprima === null) return;
 
     const quantitaNum = Number(quantita);
     if (!Number.isFinite(quantitaNum) || quantitaNum <= 0) return;
 
-    let larghezzaCm: number | null = null;
-    let altezzaCm: number | null = null;
-    let lunghezzaCm: number | null = null;
-
-    if (prodottoSelezionato.tipo_prezzo === "mq") {
-      larghezzaCm = Number(larghezza);
-      altezzaCm = Number(altezza);
-    }
-
-    if (prodottoSelezionato.tipo_prezzo === "ml") {
-      lunghezzaCm = Number(lunghezza);
-    }
+    const misure = parseMisureForm(
+      prodottoSelezionato,
+      larghezza,
+      altezza,
+      lunghezza,
+    );
+    if (!misure.valid) return;
 
     setSaving(true);
     setError(null);
 
     const supabase = createSupabaseClient();
+
+    if (isModifica && editingRigaId !== null) {
+      const { error: updateError } = await supabase
+        .from("righe")
+        .update({
+          prodotto_id: prodottoSelezionato.id,
+          larghezza_cm: misure.larghezzaCm,
+          altezza_cm: misure.altezzaCm,
+          lunghezza_cm: misure.lunghezzaCm,
+          quantita: quantitaNum,
+          posa,
+          prezzo_riga: prezzoAnteprima,
+        })
+        .eq("id", editingRigaId)
+        .eq("preventivo_id", preventivoId);
+
+      if (updateError) {
+        setError(updateError.message);
+        setSaving(false);
+        return;
+      }
+
+      try {
+        await aggiornaFlagRiga(editingRigaId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Errore sconosciuto");
+        setSaving(false);
+        return;
+      }
+
+      await refreshTotali();
+      resetForm();
+      router.replace(`/preventivo/${preventivoId}/categoria/${categoriaId}`);
+      setSaving(false);
+      return;
+    }
+
     const { data: nuovaRiga, error: insertError } = await supabase
       .from("righe")
       .insert({
         preventivo_id: Number(preventivoId),
         prodotto_id: prodottoSelezionato.id,
-        larghezza_cm: larghezzaCm,
-        altezza_cm: altezzaCm,
-        lunghezza_cm: lunghezzaCm,
+        larghezza_cm: misure.larghezzaCm,
+        altezza_cm: misure.altezzaCm,
+        lunghezza_cm: misure.lunghezzaCm,
         quantita: quantitaNum,
         posa,
         prezzo_riga: prezzoAnteprima,
@@ -350,13 +601,63 @@ export default function PreventivoCategoriaPage() {
       }
     }
 
-    await loadRighe();
+    await refreshTotali();
     resetForm();
     setSaving(false);
   }
 
+  async function handleDuplicaRiga(riga: RigaSalvata) {
+    setError(null);
+    setDuplicatingId(riga.id);
+
+    const supabase = createSupabaseClient();
+    const { data: nuovaRiga, error: insertError } = await supabase
+      .from("righe")
+      .insert({
+        preventivo_id: Number(preventivoId),
+        prodotto_id: riga.prodotto_id,
+        larghezza_cm: riga.larghezza_cm,
+        altezza_cm: riga.altezza_cm,
+        lunghezza_cm: riga.lunghezza_cm,
+        quantita: riga.quantita,
+        posa: riga.posa,
+        prezzo_riga: riga.prezzo_riga,
+      })
+      .select("id")
+      .single();
+
+    if (insertError || !nuovaRiga) {
+      setError(insertError?.message ?? "Errore nella duplicazione della riga");
+      setDuplicatingId(null);
+      return;
+    }
+
+    const flagIds = riga.righe_flag.map((rf) => rf.flag_id);
+    if (flagIds.length > 0) {
+      const { error: flagError } = await supabase.from("righe_flag").insert(
+        flagIds.map((flag_id) => ({
+          riga_id: nuovaRiga.id,
+          flag_id,
+        })),
+      );
+
+      if (flagError) {
+        setError(flagError.message);
+        setDuplicatingId(null);
+        return;
+      }
+    }
+
+    await refreshTotali();
+    setDuplicatingId(null);
+  }
+
   async function handleEliminaRiga(rigaId: number) {
     setError(null);
+
+    if (editingRigaId === rigaId) {
+      resetForm();
+    }
 
     const supabase = createSupabaseClient();
 
@@ -380,7 +681,7 @@ export default function PreventivoCategoriaPage() {
       return;
     }
 
-    await loadRighe();
+    await refreshTotali();
   }
 
   function formatMisure(riga: RigaSalvata) {
@@ -439,8 +740,20 @@ export default function PreventivoCategoriaPage() {
         <p className="text-sm text-zinc-500">{riferimento}</p>
         <h1 className="text-2xl font-semibold">{nomeCategoria}</h1>
         <p className="mt-1 text-sm text-zinc-600">
-          Aggiungi prodotti al preventivo.
+          {isModifica
+            ? "Modifica la riga selezionata."
+            : "Aggiungi prodotti al preventivo."}
         </p>
+        <div className="mt-3 flex flex-wrap gap-4 text-sm">
+          <p>
+            <span className="text-zinc-500">Totale categoria: </span>
+            <span className="font-semibold">{formatEuro(totaleCategoria)}</span>
+          </p>
+          <p>
+            <span className="text-zinc-500">Totale preventivo: </span>
+            <span className="font-semibold">{formatEuro(totalePreventivo)}</span>
+          </p>
+        </div>
       </header>
 
       {error && (
@@ -449,25 +762,68 @@ export default function PreventivoCategoriaPage() {
         </p>
       )}
 
-      <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-4">
-        <h2 className="mb-4 text-sm font-medium text-zinc-700">Nuova riga</h2>
+      <section
+        className={`mb-8 rounded-lg border bg-white p-4 ${
+          isModifica ? "border-amber-300 ring-1 ring-amber-200" : "border-zinc-200"
+        }`}
+      >
+        <h2 className="mb-4 text-sm font-medium text-zinc-700">
+          {isModifica ? "Modifica riga" : "Nuova riga"}
+        </h2>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 sm:col-span-2">
+          <div className="flex flex-col gap-1 sm:col-span-2">
             <span className="text-sm text-zinc-600">Prodotto</span>
-            <select
-              value={prodottoId}
-              onChange={(e) => setProdottoId(e.target.value)}
+            <input
+              type="text"
+              value={ricercaProdotto}
+              onChange={(e) => {
+                setRicercaProdotto(e.target.value);
+                if (prodottoId) {
+                  setProdottoId("");
+                  resetCampiProdotto(
+                    setLarghezza,
+                    setAltezza,
+                    setLunghezza,
+                    setPosa,
+                    setFlagEsclusivi,
+                    setFlagMultipli,
+                  );
+                }
+              }}
+              placeholder="Cerca prodotto..."
               className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
-            >
-              <option value="">Seleziona un prodotto</option>
-              {prodotti.map((prodotto) => (
-                <option key={prodotto.id} value={prodotto.id}>
-                  {prodotto.nome}
-                </option>
-              ))}
-            </select>
-          </label>
+            />
+            {ricercaProdotto.trim() && !prodottoId && (
+              <ul className="mt-1 max-h-40 overflow-y-auto rounded-md border border-zinc-200 bg-white">
+                {prodottiFiltrati.length > 0 ? (
+                  prodottiFiltrati.map((prodotto) => (
+                    <li key={prodotto.id}>
+                      <button
+                        type="button"
+                        onClick={() => selezionaProdotto(prodotto)}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-zinc-50"
+                      >
+                        {prodotto.nome}
+                      </button>
+                    </li>
+                  ))
+                ) : (
+                  <li className="px-3 py-2 text-sm text-zinc-500">
+                    Nessun prodotto trovato.
+                  </li>
+                )}
+              </ul>
+            )}
+            {prodottoSelezionato && (
+              <p className="text-sm text-zinc-600">
+                Selezionato:{" "}
+                <span className="font-medium text-zinc-900">
+                  {prodottoSelezionato.nome}
+                </span>
+              </p>
+            )}
+          </div>
 
           {prodottoSelezionato?.tipo_prezzo === "mq" && (
             <>
@@ -614,23 +970,35 @@ export default function PreventivoCategoriaPage() {
           ))}
         </div>
 
-        {prezzoAnteprima !== null && (
-          <p className="mt-4 text-sm text-zinc-600">
+        <div className="mt-4 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
+          <p className="text-sm text-zinc-600">
             Prezzo riga:{" "}
-            <span className="font-medium text-zinc-900">
-              {formatEuro(prezzoAnteprima)}
+            <span className="text-base font-semibold text-zinc-900">
+              {prezzoAnteprima !== null ? formatEuro(prezzoAnteprima) : "—"}
             </span>
           </p>
-        )}
+        </div>
 
-        <button
-          type="button"
-          onClick={handleAggiungiRiga}
-          disabled={!prodottoSelezionato || prezzoAnteprima === null || saving}
-          className="mt-4 rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {saving ? "Salvataggio..." : "Aggiungi riga"}
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleSalvaRiga}
+            disabled={!prodottoSelezionato || prezzoAnteprima === null || saving}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {saving ? "Salvataggio..." : isModifica ? "Aggiorna" : "Aggiungi"}
+          </button>
+          {isModifica && (
+            <button
+              type="button"
+              onClick={handleAnnullaModifica}
+              disabled={saving}
+              className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50"
+            >
+              Annulla
+            </button>
+          )}
+        </div>
       </section>
 
       <section>
@@ -661,7 +1029,9 @@ export default function PreventivoCategoriaPage() {
                   {righe.map((riga) => (
                     <tr
                       key={riga.id}
-                      className="border-b border-zinc-100 last:border-0"
+                      className={`border-b border-zinc-100 last:border-0 ${
+                        editingRigaId === riga.id ? "bg-amber-50" : ""
+                      }`}
                     >
                       <td className="px-4 py-3">{riga.prodotti.nome}</td>
                       <td className="px-4 py-3">{formatMisure(riga)}</td>
@@ -673,7 +1043,22 @@ export default function PreventivoCategoriaPage() {
                           ? formatEuro(riga.prezzo_riga)
                           : "—"}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleModificaRiga(riga)}
+                          className="mr-3 text-sm text-zinc-600 underline hover:text-zinc-900"
+                        >
+                          Modifica
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDuplicaRiga(riga)}
+                          disabled={duplicatingId === riga.id}
+                          className="mr-3 text-sm text-zinc-600 underline hover:text-zinc-900 disabled:opacity-50"
+                        >
+                          {duplicatingId === riga.id ? "..." : "Duplica"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleEliminaRiga(riga.id)}
