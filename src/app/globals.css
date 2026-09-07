@@ -1,13 +1,39 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Brand Bruno Drago */
+  --brand-accent: #0093b8;
+  --brand-accent-hover: #007a9a;
+  --brand-navy: #1c3d5a;
+  --brand-text: #1f2937;
+  --brand-muted: #6b7280;
+  --brand-label: #334e68;
+  --brand-surface: #f7f9fb;
+  --brand-border: #e1e7ee;
+  --brand-input-border: #d9e2ec;
+  --brand-danger: #dc2626;
+  --brand-danger-hover: #b91c1c;
+  --brand-white: #ffffff;
+
+  --background: var(--brand-surface);
+  --foreground: var(--brand-text);
+  --touch-min: 44px;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-hover: var(--brand-accent-hover);
+  --color-brand-navy: var(--brand-navy);
+  --color-brand-text: var(--brand-text);
+  --color-brand-muted: var(--brand-muted);
+  --color-brand-label: var(--brand-label);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-border: var(--brand-border);
+  --color-brand-input-border: var(--brand-input-border);
+  --color-brand-danger: var(--brand-danger);
+  --color-brand-danger-hover: var(--brand-danger-hover);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -16,4 +42,20 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Solo le maniglie drag devono bloccare la selezione durante il trascinamento */
+.pdf-drag-handle {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Documento “foglio” in Componi */
+.doc-sheet {
+  background: var(--brand-white);
+  box-shadow:
+    0 1px 2px rgb(28 61 90 / 6%),
+    0 8px 24px rgb(28 61 90 / 8%);
 }

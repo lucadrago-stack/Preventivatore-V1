@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { prossimoNumeroPosizione } from "@/lib/righe-posizione";
 import { createSupabaseClient } from "@/lib/supabase";
+import { formatEuro } from "@/lib/format";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 
 type RigaLibera = {
   id: number;
@@ -12,13 +15,6 @@ type RigaLibera = {
   quantita: number;
   prezzo_riga: number | null;
 };
-
-function formatEuro(value: number) {
-  return new Intl.NumberFormat("it-IT", {
-    style: "currency",
-    currency: "EUR",
-  }).format(value);
-}
 
 export default function PosizioneLiberaPage() {
   const params = useParams<{ id: string }>();
@@ -35,6 +31,12 @@ export default function PosizioneLiberaPage() {
   const [quantita, setQuantita] = useState("1");
   const [prezzoUnitario, setPrezzoUnitario] = useState("");
 
+  const formSporco =
+    descrizione.trim() !== "" ||
+    prezzoUnitario.trim() !== "" ||
+    (quantita.trim() !== "" && quantita.trim() !== "1");
+  useUnsavedChanges(formSporco && !saving);
+
   const loadRighe = useCallback(async () => {
     const supabase = createSupabaseClient();
     const { data, error: righeError } = await supabase
@@ -42,6 +44,7 @@ export default function PosizioneLiberaPage() {
       .select("id, descrizione_libera, prezzo_libero, quantita, prezzo_riga")
       .eq("preventivo_id", preventivoId)
       .is("prodotto_id", null)
+      .or("tipo_riga.is.null,tipo_riga.neq.testo")
       .order("id");
 
     if (righeError) throw new Error(righeError.message);
@@ -56,16 +59,26 @@ export default function PosizioneLiberaPage() {
       const supabase = createSupabaseClient();
 
       try {
-        const { data: preventivo, error: preventivoError } = await supabase
-          .from("preventivi")
-          .select("riferimento")
-          .eq("id", preventivoId)
-          .single();
+        const [preventivoResult, righeResult] = await Promise.all([
+          supabase
+            .from("preventivi")
+            .select("riferimento")
+            .eq("id", preventivoId)
+            .single(),
+          supabase
+            .from("righe")
+            .select("id, descrizione_libera, prezzo_libero, quantita, prezzo_riga")
+            .eq("preventivo_id", preventivoId)
+            .is("prodotto_id", null)
+            .or("tipo_riga.is.null,tipo_riga.neq.testo")
+            .order("id"),
+        ]);
 
-        if (preventivoError) throw new Error(preventivoError.message);
+        if (preventivoResult.error) throw new Error(preventivoResult.error.message);
+        if (righeResult.error) throw new Error(righeResult.error.message);
 
-        setRiferimento(preventivo.riferimento);
-        await loadRighe();
+        setRiferimento(preventivoResult.data.riferimento);
+        setRighe((righeResult.data ?? []) as RigaLibera[]);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Errore sconosciuto");
       } finally {
@@ -74,7 +87,7 @@ export default function PosizioneLiberaPage() {
     }
 
     loadData();
-  }, [preventivoId, loadRighe]);
+  }, [preventivoId]);
 
   function resetForm() {
     setDescrizione("");
@@ -95,10 +108,21 @@ export default function PosizioneLiberaPage() {
     setError(null);
 
     const supabase = createSupabaseClient();
+    let numeroPosizione: number;
+    try {
+      numeroPosizione = await prossimoNumeroPosizione(supabase, preventivoId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Errore numerazione");
+      setSaving(false);
+      return;
+    }
+
     const { error: insertError } = await supabase.from("righe").insert({
       preventivo_id: Number(preventivoId),
       prodotto_id: null,
       descrizione_libera: descrizioneTrim,
+      descrizione_cliente: descrizioneTrim,
+      descrizione_tecnica: "Riga libera",
       prezzo_libero: prezzoNum,
       quantita: quantitaNum,
       prezzo_riga: prezzoNum * quantitaNum,
@@ -106,6 +130,8 @@ export default function PosizioneLiberaPage() {
       altezza_cm: null,
       lunghezza_cm: null,
       posa: false,
+      tipo_riga: "prodotto",
+      numero_posizione: numeroPosizione,
     });
 
     if (insertError) {
