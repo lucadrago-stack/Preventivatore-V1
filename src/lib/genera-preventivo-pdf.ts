@@ -251,7 +251,8 @@ async function appendAllegato(
 
   // Estensione/content-type possono mentire (es. WebP salvato come .png).
   let tipoReale = tipoImmagineDaBytes(bytes);
-  let imageBytes = bytes;
+  // Annotazione esplicita: evita Uint8Array<ArrayBuffer> vs ArrayBufferLike (TS 5.7+)
+  let imageBytes: Uint8Array = bytes;
 
   if (tipoReale === "webp") {
     const convertiti = await webpToPngBytes(bytes);
@@ -261,7 +262,7 @@ async function appendAllegato(
       );
       return;
     }
-    imageBytes = convertiti;
+    imageBytes = new Uint8Array(convertiti);
     tipoReale = "png";
   }
 
