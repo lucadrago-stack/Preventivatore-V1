@@ -5,22 +5,27 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { prossimoNumeroPosizione } from "@/lib/righe-posizione";
 import { createSupabaseClient } from "@/lib/supabase";
-import { formatEuro } from "@/lib/format";
+import { formatEuro, titoloPreventivo } from "@/lib/format";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 
 type RigaLibera = {
   id: number;
   descrizione_libera: string;
+  nota: string | null;
   prezzo_libero: number;
   quantita: number;
   prezzo_riga: number | null;
 };
+
+const SELECT_RIGHE_LIBERE =
+  "id, descrizione_libera, nota, prezzo_libero, quantita, prezzo_riga";
 
 export default function PosizioneLiberaPage() {
   const params = useParams<{ id: string }>();
   const preventivoId = params.id;
 
   const [riferimento, setRiferimento] = useState<string | null>(null);
+  const [clienteNome, setClienteNome] = useState<string | null>(null);
   const [righe, setRighe] = useState<RigaLibera[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -28,11 +33,13 @@ export default function PosizioneLiberaPage() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const [descrizione, setDescrizione] = useState("");
+  const [nota, setNota] = useState("");
   const [quantita, setQuantita] = useState("1");
   const [prezzoUnitario, setPrezzoUnitario] = useState("");
 
   const formSporco =
     descrizione.trim() !== "" ||
+    nota.trim() !== "" ||
     prezzoUnitario.trim() !== "" ||
     (quantita.trim() !== "" && quantita.trim() !== "1");
   useUnsavedChanges(formSporco && !saving);
@@ -41,10 +48,11 @@ export default function PosizioneLiberaPage() {
     const supabase = createSupabaseClient();
     const { data, error: righeError } = await supabase
       .from("righe")
-      .select("id, descrizione_libera, prezzo_libero, quantita, prezzo_riga")
+      .select(SELECT_RIGHE_LIBERE)
       .eq("preventivo_id", preventivoId)
       .is("prodotto_id", null)
-      .or("tipo_riga.is.null,tipo_riga.neq.testo")
+      // Solo voci libere: esclude testo e righe posa (tipo_riga = posa).
+      .or("tipo_riga.is.null,tipo_riga.eq.prodotto")
       .order("id");
 
     if (righeError) throw new Error(righeError.message);
@@ -62,15 +70,15 @@ export default function PosizioneLiberaPage() {
         const [preventivoResult, righeResult] = await Promise.all([
           supabase
             .from("preventivi")
-            .select("riferimento")
+            .select("riferimento, cliente_nome")
             .eq("id", preventivoId)
             .single(),
           supabase
             .from("righe")
-            .select("id, descrizione_libera, prezzo_libero, quantita, prezzo_riga")
+            .select(SELECT_RIGHE_LIBERE)
             .eq("preventivo_id", preventivoId)
             .is("prodotto_id", null)
-            .or("tipo_riga.is.null,tipo_riga.neq.testo")
+            .or("tipo_riga.is.null,tipo_riga.eq.prodotto")
             .order("id"),
         ]);
 
@@ -78,6 +86,7 @@ export default function PosizioneLiberaPage() {
         if (righeResult.error) throw new Error(righeResult.error.message);
 
         setRiferimento(preventivoResult.data.riferimento);
+        setClienteNome(preventivoResult.data.cliente_nome ?? null);
         setRighe((righeResult.data ?? []) as RigaLibera[]);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Errore sconosciuto");
@@ -91,12 +100,14 @@ export default function PosizioneLiberaPage() {
 
   function resetForm() {
     setDescrizione("");
+    setNota("");
     setQuantita("1");
     setPrezzoUnitario("");
   }
 
   async function handleAggiungi() {
     const descrizioneTrim = descrizione.trim();
+    const notaTrim = nota.trim();
     const quantitaNum = Number(quantita);
     const prezzoNum = Number(prezzoUnitario);
 
@@ -123,6 +134,7 @@ export default function PosizioneLiberaPage() {
       descrizione_libera: descrizioneTrim,
       descrizione_cliente: descrizioneTrim,
       descrizione_tecnica: "Riga libera",
+      nota: notaTrim || null,
       prezzo_libero: prezzoNum,
       quantita: quantitaNum,
       prezzo_riga: prezzoNum * quantitaNum,
@@ -193,7 +205,9 @@ export default function PosizioneLiberaPage() {
       </div>
 
       <header className="mb-8">
-        <p className="text-sm text-zinc-500">{riferimento}</p>
+        <p className="text-sm text-zinc-500">
+          {titoloPreventivo(clienteNome, riferimento)}
+        </p>
         <h1 className="text-2xl font-semibold">Posizione libera</h1>
         <p className="mt-1 text-sm text-zinc-600">
           Inserisci una voce non presente a listino.
@@ -210,7 +224,7 @@ export default function PosizioneLiberaPage() {
         <h2 className="mb-4 text-sm font-medium text-zinc-700">Nuova voce</h2>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 sm:col-span-2">
+          <label className="flex flex-col gap-1">
             <span className="text-sm text-zinc-600">Descrizione</span>
             <input
               type="text"
@@ -218,6 +232,17 @@ export default function PosizioneLiberaPage() {
               onChange={(e) => setDescrizione(e.target.value)}
               placeholder="Es. Trasporto speciale, manodopera extra..."
               className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-sm text-zinc-600">Note</span>
+            <textarea
+              value={nota}
+              onChange={(e) => setNota(e.target.value)}
+              rows={2}
+              placeholder="Nota libera (opzionale)"
+              className="min-h-[42px] rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
             />
           </label>
 
@@ -284,6 +309,7 @@ export default function PosizioneLiberaPage() {
               <thead className="border-b border-zinc-200 bg-zinc-50 text-zinc-600">
                 <tr>
                   <th className="px-4 py-2 font-medium">Descrizione</th>
+                  <th className="px-4 py-2 font-medium">Note</th>
                   <th className="px-4 py-2 font-medium">Qtà</th>
                   <th className="px-4 py-2 font-medium">Prezzo unit.</th>
                   <th className="px-4 py-2 font-medium text-right">Totale</th>
@@ -297,6 +323,9 @@ export default function PosizioneLiberaPage() {
                     className="border-b border-zinc-100 last:border-0"
                   >
                     <td className="px-4 py-3">{riga.descrizione_libera}</td>
+                    <td className="px-4 py-3 text-zinc-600 whitespace-pre-wrap">
+                      {riga.nota?.trim() ? riga.nota : "—"}
+                    </td>
                     <td className="px-4 py-3">{riga.quantita}</td>
                     <td className="px-4 py-3">
                       {formatEuro(riga.prezzo_libero)}

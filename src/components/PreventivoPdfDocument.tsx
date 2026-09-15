@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { parseDescrizioneFormattata } from "@/lib/descrizione-formattata";
 import { formatEuro, formatDataDocumento } from "@/lib/format";
+import { formatTelefonoPdf } from "@/lib/pdf-link";
 import {
   etichettaImportoServizio,
   etichettaNotaServizio,
@@ -107,11 +108,11 @@ function SectionTitle({ children }: { children: ReactNode }) {
 }
 
 function DescrizioneFormattataPdf({ text }: { text: string }) {
-  const { centered, lines } = parseDescrizioneFormattata(text);
+  const { lines } = parseDescrizioneFormattata(text);
   if (!text.trim()) return <>—</>;
 
   return (
-    <div style={{ textAlign: centered ? "center" : "left" }}>
+    <div style={{ textAlign: "left" }}>
       {lines.map((segs, lineIndex) => {
         const plain = segs.map((s) => s.text).join("");
         return (
@@ -220,24 +221,39 @@ export default function PreventivoPdfDocument({
         padding: "4px 0",
       }}
     >
-      {/* Area loghi riservata */}
+      {/* Fascia loghi */}
       <div
         style={{
-          height: 80,
+          height: 64,
           marginBottom: 20,
-          border: `2px dashed ${BRAND.border}`,
+          border: `1px solid ${BRAND.border}`,
           borderRadius: 4,
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
-          color: BRAND.textMuted,
-          fontSize: 11,
-          fontWeight: 600,
-          letterSpacing: "0.12em",
-          backgroundColor: BRAND.rowAlt,
+          justifyContent: "space-evenly",
+          gap: 24,
+          padding: "10px 16px",
+          backgroundColor: BRAND.white,
         }}
       >
-        LOGHI
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/pdf-template/logo.png"
+          alt="Bruno Drago"
+          style={{ height: 44, width: "auto", objectFit: "contain" }}
+        />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/pdf-template/logo-iwg.png"
+          alt="IWG"
+          style={{ height: 38, width: "auto", objectFit: "contain" }}
+        />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/pdf-template/logo-posaclima.png"
+          alt="PosaClima"
+          style={{ height: 38, width: "auto", objectFit: "contain" }}
+        />
       </div>
 
       <header
@@ -264,7 +280,14 @@ export default function PreventivoPdfDocument({
             <InfoRow label="RIF. CLIENTE" value={riferimento} />
             <InfoRow label="Nome" value={clienteNome || "—"} />
             <InfoRow label="cantiere di" value={clienteCantiere || "—"} />
-            <InfoRow label="Telefono Cliente" value={clienteTelefono || "—"} />
+            <InfoRow
+              label="Telefono Cliente"
+              value={
+                clienteTelefono
+                  ? formatTelefonoPdf(clienteTelefono)
+                  : "—"
+              }
+            />
           </div>
 
           <div>
@@ -384,7 +407,12 @@ export default function PreventivoPdfDocument({
                 {commerciale?.nome ?? ""}
               </td>
               <td style={{ padding: "8px 10px", fontSize: 10, color: BRAND.text }}>
-                {[commerciale?.telefono, commerciale?.email]
+                {[
+                  commerciale?.telefono
+                    ? formatTelefonoPdf(commerciale.telefono)
+                    : null,
+                  commerciale?.email,
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </td>
@@ -515,7 +543,24 @@ export default function PreventivoPdfDocument({
                         fontSize: 10,
                       }}
                     >
-                      {riga.nota || "—"}
+                      {riga.tipo_riga === "posa" ? (
+                        <div>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src="/pdf-template/logo-posaclima.png"
+                            alt="PosaClima"
+                            style={{
+                              display: "block",
+                              width: 92,
+                              height: "auto",
+                              marginBottom: riga.nota?.trim() ? 6 : 0,
+                            }}
+                          />
+                          {riga.nota?.trim() ? riga.nota : null}
+                        </div>
+                      ) : (
+                        riga.nota || "—"
+                      )}
                     </td>
                     <td
                       style={{

@@ -30,6 +30,10 @@ export type DatiFinanziamentoPdfInput = {
   durateMostrate: number[];
   anticipoScelta: number;
   durataScelta: number | null;
+  /** Se true, PDF mostra solo durataScelta (niente confronto). */
+  soloScelta?: boolean;
+  /** Se true, contratto = totale IVATO (niente maggiorazione). */
+  assorbiMaggiorazione?: boolean;
   config: ConfigFinanziamento | null;
   convenzioni: ConvenzioneFinanziamento[];
 };
@@ -38,6 +42,7 @@ export type CardDurataPdf = {
   titolo: string;
   durataMesi: number;
   rataMensile: number;
+  anticipo: number;
   tan: number;
   doppioPiano: boolean;
   tanPrimaMeta: number | null;
@@ -54,7 +59,11 @@ export type InvestimentoRealePdf = {
 export type FinanziamentoBannerPdf = {
   istruttoria: number;
   famigliaLabel: string;
+  /** PDF senza confronto: una sola opzione già proposta. */
+  soloScelta: boolean;
   promo20: {
+    /** Prezzo contratto della convenzione 20 mesi (può differire da Agevolato sotto soglia). */
+    importoFatturato: number;
     anticipo: number;
     importoFinanziato: number;
     rataMensile: number;
@@ -161,13 +170,18 @@ function preparaSoloFinanziamento(
     input.totaleIvato,
     input.convenzioni,
     config,
+    Boolean(input.assorbiMaggiorazione),
   );
 
-  if (input.durataScelta != null) {
+  const durataRef =
+    input.durataScelta ??
+    (input.durateMostrate.length > 0 ? input.durateMostrate[0]! : null);
+
+  if (durataRef != null) {
     const scelta = input.convenzioni.find(
       (c) =>
         c.attivo &&
-        c.durata_mesi === input.durataScelta &&
+        c.durata_mesi === durataRef &&
         (c.famiglia === "base" || c.famiglia === input.famiglia),
     );
     if (scelta) {
@@ -181,9 +195,15 @@ function preparaSoloFinanziamento(
     convenzioni: input.convenzioni,
     config,
     famigliaAlternativa: input.famiglia,
+    assorbiMaggiorazione: Boolean(input.assorbiMaggiorazione),
   });
 
-  const mostrate = new Set(input.durateMostrate);
+  const durateEffettive =
+    input.soloScelta && durataRef != null
+      ? [durataRef]
+      : input.durateMostrate;
+
+  const mostrate = new Set(durateEffettive);
   const visibili = simulazioni.filter(
     (s) => s.possibile && mostrate.has(s.durataMesi),
   );
@@ -200,15 +220,20 @@ function preparaSoloFinanziamento(
   );
 
   const refBlocco =
-    famigliaSims.find((s) => s.durataMesi === input.durataScelta) ??
+    famigliaSims.find((s) => s.durataMesi === durataRef) ??
     famigliaSims[0] ??
+    promoSim ??
     null;
 
   return {
     istruttoria: config.istruttoria,
-    famigliaLabel: etichettaFamigliaPdf(input.famiglia),
+    famigliaLabel: input.soloScelta
+      ? "Soluzione di pagamento scelta"
+      : etichettaFamigliaPdf(input.famiglia),
+    soloScelta: Boolean(input.soloScelta),
     promo20: promoSim
       ? {
+          importoFatturato: promoSim.importoFatturato,
           anticipo: promoSim.anticipo,
           importoFinanziato: promoSim.importoFinanziato,
           rataMensile: promoSim.rataMensile,
@@ -225,6 +250,7 @@ function cardDaSim(s: SimulazioneConvenzione): CardDurataPdf {
     titolo: titoloConvenzione(s.convenzione),
     durataMesi: s.durataMesi,
     rataMensile: s.rataMensile,
+    anticipo: s.anticipo,
     tan: s.tan,
     doppioPiano: Boolean(s.doppioPiano),
     tanPrimaMeta: s.doppioPiano?.tanPrimaMeta ?? null,
@@ -237,6 +263,8 @@ export function parseFinanziamentoDaPreventivo(row: {
   finanziamento_durate_mostrate?: string | null;
   fin_famiglia?: string | null;
   fin_durata_scelta?: number | null;
+  fin_pdf_solo_scelta?: boolean | null;
+  fin_assorbi_maggiorazione?: boolean | null;
   detrazione_perc?: number | null;
 }): {
   attivo: boolean;
@@ -244,6 +272,8 @@ export function parseFinanziamentoDaPreventivo(row: {
   durateMostrate: number[];
   famiglia: FamigliaAlternativa;
   durataScelta: number | null;
+  soloScelta: boolean;
+  assorbiMaggiorazione: boolean;
   detrazionePerc: number;
 } {
   return {
@@ -252,6 +282,8 @@ export function parseFinanziamentoDaPreventivo(row: {
     durateMostrate: parseDurateMostrate(row.finanziamento_durate_mostrate),
     famiglia: parseFamigliaAlternativa(row.fin_famiglia),
     durataScelta: row.fin_durata_scelta ?? null,
+    soloScelta: Boolean(row.fin_pdf_solo_scelta),
+    assorbiMaggiorazione: Boolean(row.fin_assorbi_maggiorazione),
     detrazionePerc: normalizzaDetrazionePerc(row.detrazione_perc),
   };
 }

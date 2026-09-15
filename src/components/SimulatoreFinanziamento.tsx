@@ -10,7 +10,6 @@ import {
   DEFAULT_FAMIGLIA_ALTERNATIVA,
   anticipoDefaultPerConvenzione,
   defaultDurateMostrate,
-  defaultDurataScelta,
   mapConvenzioneRow,
   mappaAnticipiDefault,
   parseConfigFinanziamento,
@@ -76,6 +75,10 @@ export default function SimulatoreFinanziamento({
   );
   const [durateMostrate, setDurateMostrate] = useState<number[]>([]);
   const [durataScelta, setDurataScelta] = useState<number | null>(null);
+  /** PDF: solo l'opzione radio, senza confronto "mostra al cliente". */
+  const [soloScelta, setSoloScelta] = useState(false);
+  /** Contratto = Totale IVATO (niente +3,5%). */
+  const [assorbiMaggiorazione, setAssorbiMaggiorazione] = useState(false);
   const [defaultsApplicati, setDefaultsApplicati] = useState(false);
   const [avevaDurataScelta, setAvevaDurataScelta] = useState(false);
   const [avevaFamigliaSalvata, setAvevaFamigliaSalvata] = useState(false);
@@ -122,8 +125,8 @@ export default function SimulatoreFinanziamento({
           .from("preventivi")
           .select(
             `finanziamento_attivo, finanziamento_anticipo, finanziamento_durate_mostrate,
-            fin_famiglia, fin_durata_scelta, fin_importo_fatturato, fin_importo_finanziato,
-            fin_rata, fin_tan`,
+            fin_famiglia, fin_durata_scelta, fin_pdf_solo_scelta, fin_assorbi_maggiorazione,
+            fin_importo_fatturato, fin_importo_finanziato, fin_rata, fin_tan`,
           )
           .eq("id", preventivoId)
           .single(),
@@ -140,18 +143,29 @@ export default function SimulatoreFinanziamento({
 
       if (!prevResult.error && prevResult.data) {
         const p = prevResult.data;
-        // Mantieni lo stato salvato (non forzare sempre true: evita side-effect al rientro).
+        // Default prodotto: incluso. Solo false esplicitamente salvato resta off.
         setAttivo(
-          p.finanziamento_attivo == null ? true : Boolean(p.finanziamento_attivo),
+          p.finanziamento_attivo == null
+            ? true
+            : Boolean(p.finanziamento_attivo),
         );
+        const solo = Boolean(p.fin_pdf_solo_scelta);
+        setSoloScelta(solo);
+        setAssorbiMaggiorazione(Boolean(p.fin_assorbi_maggiorazione));
         const salvate = parseDurateMostrate(p.finanziamento_durate_mostrate);
-        setDurateSalvateDalDb(salvate.length > 0 ? salvate : null);
-        if (salvate.length > 0) {
-          setDurateMostrate(salvate);
-        }
         const sceltaSalvata = p.fin_durata_scelta ?? null;
         setDurataScelta(sceltaSalvata);
         setAvevaDurataScelta(sceltaSalvata != null);
+        // In modalità solo scelta il PDF ha una sola durata: allinea lo stato.
+        if (solo && sceltaSalvata != null) {
+          setDurateMostrate([sceltaSalvata]);
+          setDurateSalvateDalDb([sceltaSalvata]);
+        } else {
+          setDurateSalvateDalDb(salvate.length > 0 ? salvate : null);
+          if (salvate.length > 0) {
+            setDurateMostrate(salvate);
+          }
+        }
         if (p.fin_famiglia != null && String(p.fin_famiglia).trim() !== "") {
           setFamiglia(parseFamigliaAlternativa(p.fin_famiglia));
           setAvevaFamigliaSalvata(true);
@@ -169,6 +183,8 @@ export default function SimulatoreFinanziamento({
         }
       } else {
         setAttivo(true);
+        setSoloScelta(false);
+        setAssorbiMaggiorazione(false);
       }
     } catch (err) {
       setError(
@@ -200,10 +216,16 @@ export default function SimulatoreFinanziamento({
       );
     }
     if (!avevaDurataScelta) {
-      setDurataScelta(defaultDurataScelta(baseIvato, convenzioni, soglia));
+      // Solo scelta: il commerciale sceglie col radio. Confronta: prima durata mostrata.
+      setDurataScelta(null);
     }
 
-    const defaults = mappaAnticipiDefault(baseIvato, convenzioni, config);
+    const defaults = mappaAnticipiDefault(
+      baseIvato,
+      convenzioni,
+      config,
+      assorbiMaggiorazione,
+    );
     const anticipoRipristino = anticipoGeneraleSalvato ?? anticipoSceltaSalvato;
     if (anticipoRipristino != null) {
       for (const c of convenzioni) {
@@ -228,6 +250,7 @@ export default function SimulatoreFinanziamento({
     defaultsApplicati,
     durateSalvateDalDb,
     famiglia,
+    assorbiMaggiorazione,
   ]);
 
   const anticipiPerId = useMemo(() => {
@@ -239,12 +262,17 @@ export default function SimulatoreFinanziamento({
       for (const c of convenzioni) {
         if (!c.attivo) continue;
         if (out[c.id] === undefined) {
-          out[c.id] = anticipoDefaultPerConvenzione(baseIvato, c, config);
+          out[c.id] = anticipoDefaultPerConvenzione(
+            baseIvato,
+            c,
+            config,
+            assorbiMaggiorazione,
+          );
         }
       }
     }
     return out;
-  }, [anticipiRaw, baseIvato, config, convenzioni]);
+  }, [anticipiRaw, assorbiMaggiorazione, baseIvato, config, convenzioni]);
 
   const simulazioni = useMemo(() => {
     if (!config) return [] as SimulazioneConvenzione[];
@@ -254,8 +282,25 @@ export default function SimulatoreFinanziamento({
       convenzioni,
       config,
       famigliaAlternativa: famiglia,
+      assorbiMaggiorazione,
     });
-  }, [anticipiPerId, baseIvato, config, convenzioni, famiglia]);
+  }, [
+    anticipiPerId,
+    assorbiMaggiorazione,
+    baseIvato,
+    config,
+    convenzioni,
+    famiglia,
+  ]);
+
+  /** In Confronta il riferimento è la prima durata visibile (niente radio). */
+  const durataRiferimento = useMemo(() => {
+    if (soloScelta) return durataScelta;
+    if (durataScelta != null && durateMostrate.includes(durataScelta)) {
+      return durataScelta;
+    }
+    return durateMostrate[0] ?? null;
+  }, [durataScelta, durateMostrate, soloScelta]);
 
   const salvaFinanziamento = useCallback(async () => {
     setAutosaveStatus("saving");
@@ -263,7 +308,7 @@ export default function SimulatoreFinanziamento({
     const supabase = createSupabaseClient();
 
     const scelta = simulazioni.find(
-      (s) => s.durataMesi === durataScelta && s.possibile,
+      (s) => s.durataMesi === durataRiferimento && s.possibile,
     );
 
     let anticipoDaSalvare = scelta?.anticipo;
@@ -277,12 +322,19 @@ export default function SimulatoreFinanziamento({
       }
     }
 
+    const durateDaSalvare =
+      soloScelta && (scelta?.durataMesi ?? durataRiferimento) != null
+        ? [scelta?.durataMesi ?? durataRiferimento!]
+        : durateMostrate;
+
     const payload: Record<string, unknown> = {
       finanziamento_attivo: attivo,
       finanziamento_anticipo: anticipoDaSalvare,
-      finanziamento_durate_mostrate: serializzaDurateMostrate(durateMostrate),
+      finanziamento_durate_mostrate: serializzaDurateMostrate(durateDaSalvare),
       fin_famiglia: famiglia,
-      fin_durata_scelta: scelta?.durataMesi ?? durataScelta,
+      fin_durata_scelta: scelta?.durataMesi ?? durataRiferimento,
+      fin_pdf_solo_scelta: soloScelta,
+      fin_assorbi_maggiorazione: assorbiMaggiorazione,
       fin_importo_fatturato: scelta?.importoFatturato ?? null,
       fin_importo_finanziato: scelta?.importoFinanziato ?? null,
       fin_rata: scelta?.rataMensile ?? null,
@@ -308,12 +360,14 @@ export default function SimulatoreFinanziamento({
   }, [
     anticipoDefaultRaw,
     anticipoGeneraleSalvato,
+    assorbiMaggiorazione,
     attivo,
-    durataScelta,
+    durataRiferimento,
     durateMostrate,
     famiglia,
     preventivoId,
     simulazioni,
+    soloScelta,
   ]);
 
   // Autosave debounce dopo i default; al primo tick post-load non riscrivere
@@ -342,6 +396,8 @@ export default function SimulatoreFinanziamento({
     famiglia,
     durateMostrate,
     durataScelta,
+    soloScelta,
+    assorbiMaggiorazione,
     anticipiRaw,
     baseIvato,
     loading,
@@ -374,28 +430,34 @@ export default function SimulatoreFinanziamento({
     setFamiglia(next);
     // Non resettare "mostra al cliente": le durate selezionate restano
     // (20 mesi sempre, e quelle dell'altra famiglia tornano quando ci si ripassa).
-    setDurataScelta((prev) => {
-      if (prev == null) return null;
+    let nextDurata = durataScelta;
+    if (durataScelta != null) {
       const ancoraValida = convenzioni.some(
         (c) =>
           c.attivo &&
-          c.durata_mesi === prev &&
+          c.durata_mesi === durataScelta &&
           (c.famiglia === "base" || c.famiglia === next),
       );
-      if (ancoraValida) return prev;
-      const alternativa = durateMostrate.find((mesi) =>
-        convenzioni.some(
-          (c) =>
-            c.attivo &&
-            c.durata_mesi === mesi &&
-            (c.famiglia === "base" || c.famiglia === next),
-        ),
-      );
-      return alternativa ?? null;
-    });
+      if (!ancoraValida) {
+        nextDurata =
+          durateMostrate.find((mesi) =>
+            convenzioni.some(
+              (c) =>
+                c.attivo &&
+                c.durata_mesi === mesi &&
+                (c.famiglia === "base" || c.famiglia === next),
+            ),
+          ) ?? null;
+      }
+    }
+    setDurataScelta(nextDurata);
+    if (soloScelta && nextDurata != null) {
+      setDurateMostrate([nextDurata]);
+    }
   }
 
   function toggleDurataMostrata(durata: number) {
+    if (soloScelta) return;
     setDurateMostrate((prev) => {
       const next = prev.includes(durata)
         ? prev.filter((d) => d !== durata)
@@ -414,6 +476,38 @@ export default function SimulatoreFinanziamento({
       }
       return prev;
     });
+  }
+
+  function scegliOpzione(durata: number) {
+    setDurataScelta(durata);
+    if (soloScelta) {
+      setDurateMostrate([durata]);
+    }
+  }
+
+  function cambiaModalitaPdf(nextSolo: boolean) {
+    if (nextSolo === soloScelta) return;
+    setSoloScelta(nextSolo);
+    if (nextSolo) {
+      if (durataScelta != null) {
+        setDurateMostrate([durataScelta]);
+      }
+      return;
+    }
+    // Torna al confronto: ripristina le durate tipiche se ne restava una sola.
+    if (config && (durateMostrate.length <= 1 || durataScelta != null)) {
+      const defaults = defaultDurateMostrate(
+        baseIvato,
+        convenzioni,
+        config.soglia_tasso_zero_gratis,
+        famiglia,
+      );
+      if (durataScelta != null && !defaults.includes(durataScelta)) {
+        setDurateMostrate([...defaults, durataScelta].sort((a, b) => a - b));
+      } else {
+        setDurateMostrate(defaults);
+      }
+    }
   }
 
   if (loading) {
@@ -482,6 +576,43 @@ export default function SimulatoreFinanziamento({
         </div>
       </div>
 
+      {attivo && (
+        <div className="mb-4 rounded-md border border-brand-border bg-brand-surface/40 px-3 py-3">
+          <p className="mb-2 text-xs font-medium text-brand-muted">
+            Cosa vede il cliente nel PDF
+          </p>
+          <div className="inline-flex flex-wrap rounded-md border border-brand-border bg-white p-1">
+            <button
+              type="button"
+              onClick={() => cambiaModalitaPdf(false)}
+              className={`min-h-[40px] rounded px-3 text-sm font-medium ${
+                !soloScelta
+                  ? "bg-brand-navy text-white shadow-sm"
+                  : "text-brand-muted hover:text-brand-text"
+              }`}
+            >
+              Confronta opzioni
+            </button>
+            <button
+              type="button"
+              onClick={() => cambiaModalitaPdf(true)}
+              className={`min-h-[40px] rounded px-3 text-sm font-medium ${
+                soloScelta
+                  ? "bg-brand-navy text-white shadow-sm"
+                  : "text-brand-muted hover:text-brand-text"
+              }`}
+            >
+              Solo opzione scelta
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-brand-muted">
+            {soloScelta
+              ? "Nel PDF compare solo la rata selezionata col radio — utile se proponi un finanziamento già incluso nel prezzo."
+              : "Scegli quali durate confrontare con «Mostra al cliente». Il cliente segna sul PDF l’opzione preferita."}
+          </p>
+        </div>
+      )}
+
       <div className="mb-4 max-w-xs">
         <Input
           label="Anticipo di default (€, IVA inclusa)"
@@ -549,31 +680,60 @@ export default function SimulatoreFinanziamento({
             <div
               key={sim.convenzione.id}
               className={`rounded-md border p-4 ${
-                mostrata
-                  ? "border-brand-accent bg-brand-accent/5"
-                  : "border-brand-border bg-brand-surface/40"
+                soloScelta && durataScelta === sim.durataMesi
+                  ? "border-brand-navy bg-brand-navy/5 ring-1 ring-brand-navy/20"
+                  : mostrata
+                    ? "border-brand-accent bg-brand-accent/5"
+                    : "border-brand-border bg-brand-surface/40"
               } ${!sim.possibile ? "opacity-75" : ""}`}
             >
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-brand-navy">{titolo}</p>
-                <button
-                  type="button"
-                  disabled={!sim.possibile && !mostrata}
-                  onClick={() => toggleDurataMostrata(sim.durataMesi)}
-                  className={`min-h-[36px] rounded-md border px-3 text-xs font-semibold disabled:opacity-40 ${
-                    mostrata
-                      ? "border-brand-accent bg-brand-accent text-white"
-                      : "border-brand-border bg-white text-brand-text hover:bg-brand-surface"
-                  }`}
-                >
-                  {mostrata ? "Visibile al cliente" : "Mostra al cliente"}
-                </button>
+                <div className="flex min-h-[36px] items-center gap-2">
+                  {soloScelta ? (
+                    <label className="flex cursor-pointer items-center gap-2">
+                      <input
+                        type="radio"
+                        name={`fin-opzione-${preventivoId}`}
+                        checked={durataScelta === sim.durataMesi}
+                        disabled={!sim.possibile}
+                        onChange={() => scegliOpzione(sim.durataMesi)}
+                        className="h-4 w-4 accent-brand-accent"
+                      />
+                      <p className="text-sm font-semibold text-brand-navy">
+                        {titolo}
+                      </p>
+                    </label>
+                  ) : (
+                    <p className="text-sm font-semibold text-brand-navy">
+                      {titolo}
+                    </p>
+                  )}
+                  {soloScelta && durataScelta === sim.durataMesi && (
+                    <span className="rounded bg-brand-navy/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-navy">
+                      Nel PDF
+                    </span>
+                  )}
+                </div>
+                {!soloScelta && (
+                  <button
+                    type="button"
+                    disabled={!sim.possibile && !mostrata}
+                    onClick={() => toggleDurataMostrata(sim.durataMesi)}
+                    className={`min-h-[36px] rounded-md border px-3 text-xs font-semibold disabled:opacity-40 ${
+                      mostrata
+                        ? "border-brand-accent bg-brand-accent text-white"
+                        : "border-brand-border bg-white text-brand-text hover:bg-brand-surface"
+                    }`}
+                  >
+                    {mostrata ? "Visibile al cliente" : "Mostra al cliente"}
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 <div className="col-span-2 rounded-md border-2 border-brand-navy bg-white px-3 py-2 sm:col-span-1">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-navy">
-                    Importo contrattuale
+                    Importo contratto
                   </p>
                   <p className="text-lg font-bold tabular-nums text-brand-navy">
                     {formatEuro(sim.importoFatturato)}
@@ -581,9 +741,30 @@ export default function SimulatoreFinanziamento({
                   <p className="text-[10px] text-brand-muted">
                     {sim.maggiorazioneApplicata
                       ? `+${config.maggiorazione_perc}% maggiorazione`
-                      : "senza maggiorazione"}
+                      : assorbiMaggiorazione && !sim.doppioPiano
+                        ? "senza maggiorazione · assorbita"
+                        : "senza maggiorazione"}
                     {" · "}fatturato BDS
                   </p>
+                  {!sim.doppioPiano && (
+                    <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-brand-text">
+                      <input
+                        type="checkbox"
+                        checked={assorbiMaggiorazione}
+                        onChange={(e) =>
+                          setAssorbiMaggiorazione(e.target.checked)
+                        }
+                        className="h-3.5 w-3.5"
+                      />
+                      <span>
+                        Assorbi +{config.maggiorazione_perc}%
+                        <span className="text-brand-muted">
+                          {" "}
+                          (a carico BDS)
+                        </span>
+                      </span>
+                    </label>
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] uppercase tracking-wide text-brand-muted">
@@ -656,9 +837,21 @@ export default function SimulatoreFinanziamento({
       </div>
 
       <p className="mt-4 text-xs text-brand-muted">
-        L&apos;anticipo riduce solo il capitale/rata, non l&apos;importo
-        contrattuale. Le modifiche si salvano da sole.
+        {soloScelta
+          ? "Seleziona un’unica opzione col radio: è quella che finisce nel PDF. L’anticipo riduce solo il capitale/rata, non l’importo contrattuale. Le modifiche si salvano da sole."
+          : "«Mostra al cliente» decide quali durate compaiono nel PDF. L’anticipo riduce solo il capitale/rata, non l’importo contrattuale. Le modifiche si salvano da sole."}
       </p>
+      {attivo && soloScelta && durataScelta == null && (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Seleziona un&apos;opzione di pagamento per continuare (PDF /
+          salvataggio completo).
+        </p>
+      )}
+      {attivo && !soloScelta && durateMostrate.length === 0 && (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Mostra almeno una durata al cliente per il PDF.
+        </p>
+      )}
     </section>
   );
 }

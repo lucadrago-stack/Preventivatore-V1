@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Breadcrumb, PageTitle } from "@/components/ui";
 import PreventivoCategoriaFormPage from "@/components/PreventivoCategoriaForm";
 import { createSupabaseClient } from "@/lib/supabase";
+import { titoloPreventivo } from "@/lib/format";
 
 type Sottocategoria = {
   id: number;
@@ -37,6 +38,7 @@ function CategoriaGate() {
   const rigaDaUrl = searchParams.get("riga");
 
   const [riferimento, setRiferimento] = useState<string | null>(null);
+  const [clienteNome, setClienteNome] = useState<string | null>(null);
   const [nomeCategoria, setNomeCategoria] = useState<string | null>(null);
   const [sottocategorie, setSottocategorie] = useState<Sottocategoria[] | null>(
     null,
@@ -53,7 +55,7 @@ function CategoriaGate() {
           await Promise.all([
             supabase
               .from("preventivi")
-              .select("riferimento")
+              .select("riferimento, cliente_nome")
               .eq("id", preventivoId)
               .single(),
             supabase
@@ -82,6 +84,7 @@ function CategoriaGate() {
         if (sottoResult.error) throw new Error(sottoResult.error.message);
 
         setRiferimento(preventivoResult.data.riferimento);
+        setClienteNome(preventivoResult.data.cliente_nome ?? null);
         setNomeCategoria(categoriaResult.data.nome);
         const elenco = (sottoResult.data ?? []) as Sottocategoria[];
         setSottocategorie(elenco);
@@ -142,7 +145,9 @@ function CategoriaGate() {
       <Breadcrumb
         items={[
           {
-            label: riferimento ? `Preventivo ${riferimento}` : "Preventivo",
+            label: riferimento
+              ? titoloPreventivo(clienteNome, riferimento)
+              : "Preventivo",
             href: `/preventivo/${preventivoId}`,
           },
           { label: nomeCategoria ?? "Categoria" },

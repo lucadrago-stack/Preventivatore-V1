@@ -16,8 +16,9 @@ import {
   type AllegatoPreventivo,
 } from "@/lib/allegati-preventivo";
 import { createSupabaseClient } from "@/lib/supabase";
-import { formatEuro, formatDataPerInput, normalizzaRelazione } from "@/lib/format";
+import { formatEuro, formatDataPerInput, dataOggiPerInput, normalizzaRelazione, titoloPreventivo } from "@/lib/format";
 import { hrefFormRigaPreventivo } from "@/lib/percorsi-preventivo";
+import { puoAssegnareAltriCommerciali } from "@/lib/ruoli-utente";
 import {
   autosaveInputHandlers,
   useAutosaveController,
@@ -225,6 +226,8 @@ export default function PreventivoPage() {
   const [validitaGiorni, setValiditaGiorni] = useState("30");
   const [revisione, setRevisione] = useState("0");
   const [commercialeId, setCommercialeId] = useState("");
+  const [mioCommercialeId, setMioCommercialeId] = useState<number | null>(null);
+  const [puoScegliereCommerciale, setPuoScegliereCommerciale] = useState(false);
   const [snapDati, setSnapDati] = useState<string | null>(null);
 
   type DatiFormSnap = {
@@ -290,18 +293,27 @@ export default function PreventivoPage() {
     setRighe(await fetchRighePreventivo(supabase, preventivoId));
   }, [preventivoId]);
 
-  function popolaFormDatiPreventivo(dati: DatiPreventivo) {
+  function popolaFormDatiPreventivo(
+    dati: DatiPreventivo,
+    forzatoCommercialeId?: number | null,
+  ) {
     setClienteNome(dati.cliente_nome ?? "");
     setClienteCantiere(dati.cliente_cantiere ?? "");
     setClienteTelefono(dati.cliente_telefono ?? "");
     setClienteEmail(dati.cliente_email ?? "");
     setNumeroPreventivo(dati.numero_preventivo ?? "");
-    setDataPreventivo(formatDataPerInput(dati.data_preventivo));
+    setDataPreventivo(
+      formatDataPerInput(dati.data_preventivo) || dataOggiPerInput(),
+    );
     setValiditaGiorni(String(dati.validita_giorni ?? 30));
     setRevisione(String(dati.revisione ?? 0));
-    setCommercialeId(
-      dati.commerciale_id != null ? String(dati.commerciale_id) : "",
-    );
+    const commercialeAssegnato =
+      forzatoCommercialeId != null
+        ? String(forzatoCommercialeId)
+        : dati.commerciale_id != null
+          ? String(dati.commerciale_id)
+          : "";
+    setCommercialeId(commercialeAssegnato);
   }
 
   useEffect(() => {
@@ -312,6 +324,24 @@ export default function PreventivoPage() {
       const supabase = createSupabaseClient();
 
       try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        let profiloId: number | null = null;
+        let puoScegliere = false;
+        if (user) {
+          const { data: profilo } = await supabase
+            .from("commerciali")
+            .select("id, ruolo, sede_id")
+            .eq("user_id", user.id)
+            .maybeSingle();
+          profiloId = profilo?.id ?? null;
+          puoScegliere = puoAssegnareAltriCommerciali(profilo?.ruolo);
+        }
+        setMioCommercialeId(profiloId);
+        setPuoScegliereCommerciale(puoScegliere);
+
         const [
           preventivoResult,
           categorieResult,
@@ -348,24 +378,49 @@ export default function PreventivoPage() {
           throw new Error(commercialiResult.error.message);
         }
 
-        setRiferimento(preventivoResult.data.riferimento);
-        popolaFormDatiPreventivo(preventivoResult.data);
+        const prev = preventivoResult.data;
+        setRiferimento(prev.riferimento);
+        // Commerciale semplice: sempre se stesso. Se manca in DB, forza il proprio id.
+        const commercialeForzato =
+          !puoScegliere && profiloId != null
+            ? profiloId
+            : prev.commerciale_id == null && profiloId != null
+              ? profiloId
+              : null;
+
+        popolaFormDatiPreventivo(prev, commercialeForzato);
+        const dataVal =
+          formatDataPerInput(prev.data_preventivo) || dataOggiPerInput();
+        const commercialeIdSnap =
+          commercialeForzato != null
+            ? String(commercialeForzato)
+            : prev.commerciale_id != null
+              ? String(prev.commerciale_id)
+              : "";
+
+        const patch: Record<string, unknown> = {};
+        if (!prev.data_preventivo) patch.data_preventivo = dataVal;
+        if (
+          commercialeForzato != null &&
+          prev.commerciale_id !== commercialeForzato
+        ) {
+          patch.commerciale_id = commercialeForzato;
+        }
+        if (Object.keys(patch).length > 0) {
+          void supabase.from("preventivi").update(patch).eq("id", preventivoId);
+        }
+
         setSnapDati(
           JSON.stringify({
-            clienteNome: preventivoResult.data.cliente_nome ?? "",
-            clienteCantiere: preventivoResult.data.cliente_cantiere ?? "",
-            clienteTelefono: preventivoResult.data.cliente_telefono ?? "",
-            clienteEmail: preventivoResult.data.cliente_email ?? "",
-            numeroPreventivo: preventivoResult.data.numero_preventivo ?? "",
-            dataPreventivo: formatDataPerInput(
-              preventivoResult.data.data_preventivo,
-            ),
-            validitaGiorni: String(preventivoResult.data.validita_giorni ?? 30),
-            revisione: String(preventivoResult.data.revisione ?? 0),
-            commercialeId:
-              preventivoResult.data.commerciale_id != null
-                ? String(preventivoResult.data.commerciale_id)
-                : "",
+            clienteNome: prev.cliente_nome ?? "",
+            clienteCantiere: prev.cliente_cantiere ?? "",
+            clienteTelefono: prev.cliente_telefono ?? "",
+            clienteEmail: prev.cliente_email ?? "",
+            numeroPreventivo: prev.numero_preventivo ?? "",
+            dataPreventivo: dataVal,
+            validitaGiorni: String(prev.validita_giorni ?? 30),
+            revisione: String(prev.revisione ?? 0),
+            commercialeId: commercialeIdSnap,
           }),
         );
         setCategorie(categorieResult.data as Categoria[]);
@@ -607,10 +662,22 @@ export default function PreventivoPage() {
       }
     }
 
+    const commercialeIdDaSalvare = !puoScegliereCommerciale && mioCommercialeId != null
+      ? mioCommercialeId
+      : dati.commercialeId
+        ? Number(dati.commercialeId)
+        : mioCommercialeId;
+
+    if (commercialeIdDaSalvare == null) {
+      throw new Error(
+        "Commerciale non assegnato. Contatta l'amministratore per collegare il profilo.",
+      );
+    }
+
     const { error: updateError } = await supabase
       .from("preventivi")
       .update({
-        commerciale_id: dati.commercialeId ? Number(dati.commercialeId) : null,
+        commerciale_id: commercialeIdDaSalvare,
         cliente_id: clienteId,
         cliente_nome: nomeTrimmed || null,
         cliente_cantiere: dati.clienteCantiere.trim() || null,
@@ -627,11 +694,23 @@ export default function PreventivoPage() {
       throw new Error(updateError.message);
     }
 
-    const snap = serializzaDatiForm(dati);
+    const datiConCommerciale = {
+      ...dati,
+      commercialeId: String(commercialeIdDaSalvare),
+    };
+    if (dati.commercialeId !== datiConCommerciale.commercialeId) {
+      setCommercialeId(datiConCommerciale.commercialeId);
+      formDatiRef.current = {
+        ...formDatiRef.current,
+        commercialeId: datiConCommerciale.commercialeId,
+      };
+    }
+
+    const snap = serializzaDatiForm(datiConCommerciale);
     snapDatiRef.current = snap;
     setSnapDati(snap);
     setError(null);
-  }, [preventivoId]);
+  }, [preventivoId, mioCommercialeId, puoScegliereCommerciale]);
 
   const triggerAutosaveDati = useCallback(() => {
     const dati = formDatiRef.current;
@@ -793,7 +872,7 @@ export default function PreventivoPage() {
         ) : (
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-brand-navy sm:text-3xl">
-              {riferimento}
+              {titoloPreventivo(clienteNome, riferimento)}
             </h1>
             <button
               type="button"
@@ -815,9 +894,9 @@ export default function PreventivoPage() {
           </div>
         )}
 
-        {(clienteNome || clienteCantiere) && (
+        {clienteCantiere.trim() && (
           <p className="mt-1 text-sm text-brand-muted">
-            {[clienteNome, clienteCantiere].filter(Boolean).join(" · ")}
+            {clienteCantiere.trim()}
           </p>
         )}
 
@@ -938,7 +1017,9 @@ export default function PreventivoPage() {
             as="select"
             label="Commerciale"
             value={commercialeId}
+            disabled={!puoScegliereCommerciale}
             onChange={(e) => {
+              if (!puoScegliereCommerciale) return;
               const value = e.target.value;
               setCommercialeId(value);
               formDatiRef.current = {
@@ -950,12 +1031,20 @@ export default function PreventivoPage() {
             onBlur={autosaveField.onBlur}
             wrapperClassName="sm:col-span-2"
           >
-            <option value="">Seleziona un commerciale</option>
-            {commerciali.map((commerciale) => (
-              <option key={commerciale.id} value={commerciale.id}>
-                {commerciale.nome}
-              </option>
-            ))}
+            {puoScegliereCommerciale && (
+              <option value="">Seleziona un commerciale</option>
+            )}
+            {commerciali
+              .filter((c) =>
+                puoScegliereCommerciale
+                  ? true
+                  : mioCommercialeId != null && c.id === mioCommercialeId,
+              )
+              .map((commerciale) => (
+                <option key={commerciale.id} value={commerciale.id}>
+                  {commerciale.nome}
+                </option>
+              ))}
           </Input>
             </div>
           </div>

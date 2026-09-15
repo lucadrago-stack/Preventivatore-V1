@@ -14,9 +14,18 @@ export type DescrizioneParsata = {
 
 const RED_STYLE = "color:red";
 
-/** Rileva HTML minimale (span/br/div) già salvato. */
+/** Rileva markup HTML (anche tabelle Excel / paste ricchi). */
 export function isDescrizioneHtml(raw: string): boolean {
-  return /<\/?(?:span|br|div)\b/i.test(raw);
+  return /<\/?[a-z][^>]*>/i.test(raw);
+}
+
+/**
+ * Se un salvataggio precedente ha escapato i tag (&lt;table&gt;),
+ * li riporta a HTML reale così possiamo estrarre solo il testo.
+ */
+function unescapeEscapedHtmlMarkup(raw: string): string {
+  if (!/&lt;\/?[a-z]/i.test(raw)) return raw;
+  return unescapeHtml(raw);
 }
 
 export function isDescrizioneCentrata(raw: string): boolean {
@@ -107,6 +116,7 @@ function decodeEntitiesInText(text: string): string {
 /**
  * Parser HTML minimale senza DOM (ok in browser e Node).
  * Supporta: <br>, <span style="color:red">, wrapper text-align:center.
+ * Strippa tabelle/Excel e altri tag non ammessi tenendo il testo.
  */
 function parseHtmlDescrizione(html: string): DescrizioneParsata {
   const centered = /text-align\s*:\s*center/i.test(html);
@@ -121,13 +131,21 @@ function parseHtmlDescrizione(html: string): DescrizioneParsata {
     body = body.replace(/<\/div>\s*$/i, "");
   }
 
-  // Normalizza chiusure e paragrafi tipici del contenteditable.
+  // Normalizza blocchi → a capo PRIMA di togliere i tag.
+  // Chrome con contentEditable fa spesso: `riga1<div>riga2</div>`
+  // (togliere solo <div> attaccava le frasi: CARDINIPALETTA).
   body = body
-    .replace(/<\/div>\s*<div[^>]*>/gi, "<br>")
-    .replace(/<div[^>]*>/gi, "")
-    .replace(/<\/div>/gi, "<br>")
-    .replace(/<p[^>]*>/gi, "")
-    .replace(/<\/p>/gi, "<br>")
+    .replace(/text-align\s*:\s*center;?/gi, "")
+    .replace(/\salign=["']center["']/gi, "")
+    .replace(/<div[^>]*>/gi, "<br>")
+    .replace(/<\/div>/gi, "")
+    .replace(/<p[^>]*>/gi, "<br>")
+    .replace(/<\/p>/gi, "")
+    .replace(/<\/tr>/gi, "<br>")
+    .replace(/<\/(h[1-6]|li|blockquote)>/gi, "<br>")
+    .replace(/<(?:table|thead|tbody|tfoot|tr|td|th|colgroup|col)\b[^>]*>/gi, "")
+    .replace(/<\/(?:table|thead|tbody|tfoot|tr|td|th|colgroup|col)>/gi, "")
+    .replace(/^(?:\s*<br\s*\/?>)+/i, "")
     .replace(/<br\s*\/?>/gi, "\n");
 
   const lines: DescrizioneSegmento[][] = [];
@@ -173,6 +191,14 @@ function parseHtmlDescrizione(html: string): DescrizioneParsata {
     lines.push([{ text: "", red: false }]);
   }
 
+  // Paste Excel: </tr> → a capo lascia spesso una riga vuota in coda.
+  while (
+    lines.length > 1 &&
+    lines[lines.length - 1].every((s) => !s.text.trim())
+  ) {
+    lines.pop();
+  }
+
   return { centered, lines };
 }
 
@@ -180,7 +206,7 @@ function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, "");
 }
 
-/** Serializza la struttura parsata in HTML minimale salvabile. */
+/** Serializza la struttura parsata in HTML minimale salvabile (sempre a sinistra). */
 export function serializeDescrizioneHtml(parsed: DescrizioneParsata): string {
   const body = parsed.lines
     .map((segs) =>
@@ -193,32 +219,28 @@ export function serializeDescrizioneHtml(parsed: DescrizioneParsata): string {
     )
     .join("<br>");
 
-  if (parsed.centered) {
-    return `<div style="text-align:center">${body}</div>`;
-  }
   return body;
 }
 
 /**
  * Parsing unificato: HTML nuovo oppure legacy **testo** / [center].
+ * Recupera anche descrizioni corrotte (tag Excel escapati come testo).
  */
 export function parseDescrizioneFormattata(raw: string): DescrizioneParsata {
   if (!raw) {
     return { centered: false, lines: [[{ text: "", red: false }]] };
   }
-  if (isDescrizioneHtml(raw)) {
-    return parseHtmlDescrizione(raw);
+  const unescaped = unescapeEscapedHtmlMarkup(raw);
+  if (isDescrizioneHtml(unescaped)) {
+    return parseHtmlDescrizione(unescaped);
   }
-  return parseLegacyDescrizione(raw);
+  return parseLegacyDescrizione(unescaped);
 }
 
 /** Converte legacy → HTML; se già HTML, sanifica. Usare al caricamento editor. */
 export function normalizeDescrizioneToHtml(raw: string): string {
   if (!raw) return "";
-  if (isDescrizioneHtml(raw)) {
-    return serializeDescrizioneHtml(parseHtmlDescrizione(raw));
-  }
-  return serializeDescrizioneHtml(parseLegacyDescrizione(raw));
+  return serializeDescrizioneHtml(parseDescrizioneFormattata(raw));
 }
 
 /**

@@ -1,13 +1,20 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import NuovoPreventivoModal from "@/components/NuovoPreventivoModal";
 import { Card, Input, PageTitle } from "@/components/ui";
 import { createSupabaseClient } from "@/lib/supabase";
-import { formatEuro, formatData, normalizzaRelazione } from "@/lib/format";
+import { formatEuro, formatData, normalizzaRelazione, titoloPreventivo } from "@/lib/format";
 
 const POSIZIONE_LIBERA_LABEL = "Posizione libera";
+
+/** Dimensioni native di public/logo.png (1271×607). */
+const LOGO_NATIVE_W = 1271;
+const LOGO_NATIVE_H = 607;
+const LOGO_HEIGHT = 96;
+const LOGO_WIDTH = Math.round((LOGO_HEIGHT * LOGO_NATIVE_W) / LOGO_NATIVE_H);
 
 type RigaPreventivo = {
   prezzo_riga: number | null;
@@ -83,6 +90,7 @@ export default function Home() {
 
   const loadPreventivi = useCallback(async () => {
     const supabase = createSupabaseClient();
+
     const [preventiviResult, righeResult, commercialiResult, versioniResult, clientiResult] =
       await Promise.all([
       supabase
@@ -317,11 +325,27 @@ export default function Home() {
       return;
     }
 
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    let commercialeCorrenteId: number | null = null;
+    if (user) {
+      const { data: profilo } = await supabase
+        .from("commerciali")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      commercialeCorrenteId = profilo?.id ?? null;
+    }
+
     const { data: nuovoPreventivo, error: createError } = await supabase
       .from("preventivi")
       .insert({
         ...prevFull,
         riferimento: `${prevFull.riferimento} (copia)`,
+        // Se l'originale non ha commerciale, assegna quello della sessione
+        // (necessario per RLS insert del ruolo commerciale).
+        commerciale_id: prevFull.commerciale_id ?? commercialeCorrenteId,
       })
       .select("id")
       .single();
@@ -465,13 +489,15 @@ export default function Home() {
   return (
     <main className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-10">
-        <div
-          className="mx-auto mb-8 flex h-[72px] w-full max-w-sm items-center justify-center rounded-md border border-dashed border-brand-border bg-white"
-          aria-label="Spazio riservato al logo"
-        >
-          <span className="text-xs font-semibold tracking-[0.28em] text-brand-navy/40">
-            BRUNO DRAGO
-          </span>
+        <div className="mx-auto mb-8 flex max-w-md justify-center sm:max-w-lg">
+          <Image
+            src="/logo.png"
+            alt="Bruno Drago"
+            width={LOGO_WIDTH}
+            height={LOGO_HEIGHT}
+            className="h-20 w-auto sm:h-24"
+            priority
+          />
         </div>
 
         <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -591,7 +617,10 @@ export default function Home() {
                   >
                     <div className="min-w-0">
                       <p className="flex flex-wrap items-center gap-2 text-lg font-semibold text-brand-navy">
-                        {preventivo.riferimento}
+                        {titoloPreventivo(
+                          preventivo.cliente_nome,
+                          preventivo.riferimento,
+                        )}
                         <span
                           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                             preventivo.haVersione
@@ -599,12 +628,10 @@ export default function Home() {
                               : "bg-amber-50 text-amber-800"
                           }`}
                         >
-                          {preventivo.haVersione ? "Inviato" : "Bozza"}
+                          {preventivo.haVersione ? "Completato" : "Bozza"}
                         </span>
                       </p>
                       <p className="mt-0.5 text-sm text-brand-muted">
-                        {preventivo.cliente_nome || "Cliente non indicato"}
-                        {" · "}
                         {formatData(preventivo.created_at)}
                       </p>
                       <p className="mt-0.5 text-xs text-brand-muted">

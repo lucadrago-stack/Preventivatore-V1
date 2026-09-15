@@ -3,6 +3,7 @@ import type { AllegatoPerPdf } from "@/lib/allegati-preventivo";
 import {
   SITO_AZIENDALE_URL,
   aggiungiLinkUri,
+  formatTelefonoPdf,
   uriEmail,
   uriTelefono,
 } from "@/lib/pdf-link";
@@ -397,7 +398,7 @@ async function applicaOverlayCopertina(
   });
 
   // Consulente: copriamo il box PNG e ridisegniamo etichetta + contatti.
-  const REDATTO = { x: 45, y: 218, w: 258, h: 44 };
+  const REDATTO = { x: 45, y: 214, w: 258, h: 48 };
   const accent = rgb(27 / 255, 154 / 255, 176 / 255);
   const boxFill = rgb(0.94, 0.94, 0.94);
   const boxBorder = rgb(0.8, 0.82, 0.84);
@@ -455,7 +456,7 @@ async function applicaOverlayCopertina(
 
   if (telefono) {
     const telUri = uriTelefono(telefono);
-    let telText = telefono;
+    let telText = formatTelefonoPdf(telefono);
     while (
       telText.length > 1 &&
       cursorX + fontRegular.widthOfTextAtSize(telText, contattiSize) > maxX

@@ -77,7 +77,10 @@ export function mqCalcolati(
 export function isProdottoPrezzoDigitato(prodotto: {
   tipo_prezzo: TipoPrezzo;
   prezzo_unitario: number;
+  regola_prezzo?: string | null;
 }): boolean {
+  // Griglia ha prezzo_unitario=0 ma il prezzo arriva dalla interpolazione, non dal digitato.
+  if (prodotto.regola_prezzo === "griglia") return false;
   const unitario = Number(prodotto.prezzo_unitario);
   return (
     prodotto.tipo_prezzo === "pezzo" &&

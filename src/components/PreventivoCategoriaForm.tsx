@@ -26,6 +26,7 @@ import {
   formatImportoCampo,
   invertiRegolaPrezzo,
   serializzaRegolaApplicata,
+  spiegazionePrezzoGriglia,
   spiegazioneRegolaPrezzo,
   type ConfigRegolaPrezzo,
 } from "@/lib/regola-prezzo";
@@ -48,9 +49,22 @@ import {
   type ModalitaMq,
 } from "@/lib/righe-posizione";
 import { createSupabaseClient } from "@/lib/supabase";
-import { formatEuro, normalizzaRelazione } from "@/lib/format";
+import { formatEuro, normalizzaRelazione, titoloPreventivo } from "@/lib/format";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import ComboboxLibero from "@/components/ComboboxLibero";
+import DescrizioneCommercialeEditor from "@/components/DescrizioneCommercialeEditor";
+import { sanitizeDescrizioneHtml } from "@/lib/descrizione-formattata";
+import {
+  EXTRA_COLORE_BIANCO_MASSA,
+  TIPOLOGIE_APERTURA_GRIGLIA,
+  interpolaPrezzoGriglia,
+  isProdottoGriglia,
+  messaggioFuoriRangeGriglia,
+  prezzoUnitarioConExtraColore,
+  type CellaGrigliaPrezzoConTipologia,
+  type ExtraColoreGriglia,
+  type TipologiaAperturaGriglia,
+} from "@/lib/griglia-prezzo";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type TipoPrezzo = "mq" | "pezzo" | "ml";
@@ -66,10 +80,12 @@ type Prodotto = {
   minimo: number | null;
   posa_prezzo: number | null;
   descrizione_tecnica: string | null;
+  descrizione_cliente: string | null;
   regola_prezzo: string | null;
   regola_valore: number | null;
   etichetta_prezzo: string | null;
   ha_vetro: boolean;
+  griglia_prezzo_id: number | null;
 };
 
 type FlagSupplemento = {
@@ -96,6 +112,8 @@ type RigaSalvata = {
   larghezza_cm: number | null;
   altezza_cm: number | null;
   lunghezza_cm: number | null;
+  larghezza_mm: number | null;
+  altezza_mm: number | null;
   quantita: number;
   posa: boolean;
   prezzo_riga: number | null;
@@ -105,6 +123,7 @@ type RigaSalvata = {
   posa_riga_separata: boolean | null;
   prezzo_libero: number | null;
   descrizione_tecnica: string | null;
+  descrizione_cliente: string | null;
   modalita_mq: string | null;
   mq_diretti: number | null;
   numero_posizione: number | null;
@@ -116,6 +135,9 @@ type RigaSalvata = {
   colore_esterno: string | null;
   colore_ferramenta: string | null;
   vetro: string | null;
+  tipologia_apertura: string | null;
+  extra_colore_nome: string | null;
+  extra_colore_percentuale: number | null;
   prodotti: {
     id: number;
     nome: string;
@@ -127,6 +149,8 @@ type RigaSalvata = {
     posa_prezzo: number | null;
     descrizione_tecnica: string | null;
     ha_vetro: boolean;
+    regola_prezzo: string | null;
+    griglia_prezzo_id: number | null;
   };
   righe_flag: {
     flag_id: number;
@@ -149,11 +173,13 @@ async function fetchRigheCategoria(
   let query = supabase
     .from("righe")
     .select(
-      `id, preventivo_id, prodotto_id, larghezza_cm, altezza_cm, lunghezza_cm, quantita, posa, prezzo_riga,
+      `id, preventivo_id, prodotto_id, larghezza_cm, altezza_cm, lunghezza_cm, larghezza_mm, altezza_mm, quantita, posa, prezzo_riga,
       posa_importo, posa_tipo, posa_manuale, posa_riga_separata, prezzo_libero, descrizione_tecnica,
+      descrizione_cliente,
       modalita_mq, mq_diretti, numero_posizione, riferimento_interno, prezzo_inserito, regola_applicata,
       colore, colore_interno, colore_esterno, colore_ferramenta, vetro,
-      prodotti!inner(id, nome, tipo_prezzo, categoria_id, sottocategoria_id, prezzo_unitario, minimo, posa_prezzo, descrizione_tecnica, ha_vetro),
+      tipologia_apertura, extra_colore_nome, extra_colore_percentuale,
+      prodotti!inner(id, nome, tipo_prezzo, categoria_id, sottocategoria_id, prezzo_unitario, minimo, posa_prezzo, descrizione_tecnica, ha_vetro, regola_prezzo, griglia_prezzo_id),
       righe_flag(flag_id, flag_supplementi(nome))`,
     )
     .eq("preventivo_id", preventivoId)
@@ -168,14 +194,26 @@ async function fetchRigheCategoria(
 
   const righeNormalizzate: RigaSalvata[] = (data ?? []).map((riga) => ({
     ...riga,
+    descrizione_cliente: riga.descrizione_cliente ?? null,
     colore: riga.colore ?? null,
     colore_interno: riga.colore_interno ?? null,
     colore_esterno: riga.colore_esterno ?? null,
     colore_ferramenta: riga.colore_ferramenta ?? null,
     vetro: riga.vetro ?? null,
+    larghezza_mm: riga.larghezza_mm ?? null,
+    altezza_mm: riga.altezza_mm ?? null,
+    tipologia_apertura: riga.tipologia_apertura ?? null,
+    extra_colore_nome: riga.extra_colore_nome ?? null,
+    extra_colore_percentuale:
+      riga.extra_colore_percentuale != null
+        ? Number(riga.extra_colore_percentuale)
+        : null,
     prodotti: {
       ...normalizzaRelazione(riga.prodotti)!,
       ha_vetro: Boolean(normalizzaRelazione(riga.prodotti)!.ha_vetro),
+      regola_prezzo: normalizzaRelazione(riga.prodotti)!.regola_prezzo ?? null,
+      griglia_prezzo_id:
+        normalizzaRelazione(riga.prodotti)!.griglia_prezzo_id ?? null,
     },
     righe_flag: (riga.righe_flag ?? []).map((rf) => ({
       ...rf,
@@ -337,6 +375,10 @@ type PosizioneForm = {
   altezza: string;
   lunghezza: string;
   quantita: string;
+  /** Solo prodotti griglia (multi-posizione). */
+  tipologia_apertura: TipologiaAperturaGriglia | "";
+  larghezzaMm: string;
+  altezzaMm: string;
 };
 
 let posizioneKeySeq = 0;
@@ -349,15 +391,26 @@ function creaPosizioneVuota(): PosizioneForm {
     altezza: "",
     lunghezza: "",
     quantita: "1",
+    tipologia_apertura: "",
+    larghezzaMm: "",
+    altezzaMm: "",
   };
 }
 
 function isPosizioneVuota(
   posizione: PosizioneForm,
-  tipo: "mq" | "ml",
+  tipo: "mq" | "ml" | "griglia",
 ): boolean {
   const qtyDefault =
     posizione.quantita.trim() === "" || posizione.quantita.trim() === "1";
+  if (tipo === "griglia") {
+    return (
+      !posizione.tipologia_apertura &&
+      posizione.larghezzaMm.trim() === "" &&
+      posizione.altezzaMm.trim() === "" &&
+      qtyDefault
+    );
+  }
   if (tipo === "ml") {
     return posizione.lunghezza.trim() === "" && qtyDefault;
   }
@@ -386,6 +439,41 @@ function parsePosizioneForm(
     valid: misure.valid && Number.isFinite(quantitaNum) && quantitaNum > 0,
     quantitaNum: Number.isFinite(quantitaNum) ? quantitaNum : 0,
   };
+}
+
+function parsePosizioneGriglia(posizione: PosizioneForm): {
+  valid: boolean;
+  tipologia: TipologiaAperturaGriglia | "";
+  larghezzaMm: number;
+  altezzaMm: number;
+  quantitaNum: number;
+} {
+  const quantitaNum = Number(posizione.quantita);
+  const L = Number(posizione.larghezzaMm);
+  const H = Number(posizione.altezzaMm);
+  const tipologia = posizione.tipologia_apertura;
+  const valid =
+    Boolean(tipologia) &&
+    Number.isFinite(L) &&
+    L > 0 &&
+    Number.isFinite(H) &&
+    H > 0 &&
+    Number.isFinite(quantitaNum) &&
+    quantitaNum > 0;
+  return {
+    valid,
+    tipologia,
+    larghezzaMm: Number.isFinite(L) ? L : 0,
+    altezzaMm: Number.isFinite(H) ? H : 0,
+    quantitaNum: Number.isFinite(quantitaNum) ? quantitaNum : 0,
+  };
+}
+
+function scontoGrigliaPercFromProdotto(
+  regolaValore: number | null | undefined,
+): number {
+  const v = Number(regolaValore);
+  return Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 function calcolaRigaDaMisure(options: {
@@ -460,6 +548,7 @@ function popolaFormDaRiga(
     setModalitaMq: (v: ModalitaMq) => void;
     setMqDiretti: (v: string) => void;
     setRiferimentoInterno: (v: string) => void;
+    setDescrizioneCliente: (v: string) => void;
     setColore: (v: string) => void;
     setColoreInterno: (v: string) => void;
     setColoreEsterno: (v: string) => void;
@@ -495,6 +584,9 @@ function popolaFormDaRiga(
   );
   setters.setPosaRigaSeparata(riga.posa_riga_separata ?? false);
   setters.setRiferimentoInterno(riga.riferimento_interno ?? "");
+  setters.setDescrizioneCliente(
+    sanitizeDescrizioneHtml(riga.descrizione_cliente ?? ""),
+  );
   if (riga.prodotti.ha_vetro) {
     setters.setColore("");
     setters.setColoreInterno(riga.colore_interno ?? "");
@@ -568,7 +660,7 @@ function TabellaPosizioniMultiple({
   onRemove,
   onDuplica,
 }: {
-  tipo: "mq" | "ml";
+  tipo: "mq" | "ml" | "griglia";
   minimo: number | null;
   posizioni: PosizioneForm[];
   calcoli: (RisultatoCalcoloRiga | null)[];
@@ -579,14 +671,25 @@ function TabellaPosizioniMultiple({
   onDuplica: (key: string) => void;
 }) {
   const isMq = tipo === "mq";
+  const isGriglia = tipo === "griglia";
 
   return (
     <div className="space-y-3 sm:col-span-2">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[36rem] text-left text-sm">
+        <table
+          className={`w-full text-left text-sm ${
+            isGriglia ? "min-w-[48rem]" : "min-w-[36rem]"
+          }`}
+        >
           <thead className="text-brand-muted">
             <tr>
-              {isMq ? (
+              {isGriglia ? (
+                <>
+                  <th className="pb-2 pr-2 font-medium">Tipologia apertura</th>
+                  <th className="w-28 pb-2 pr-2 font-medium">Larghezza (mm)</th>
+                  <th className="w-28 pb-2 pr-2 font-medium">Altezza (mm)</th>
+                </>
+              ) : isMq ? (
                 <>
                   <th className="pb-2 pr-2 font-medium">Larghezza (cm)</th>
                   <th className="pb-2 pr-2 font-medium">Altezza (cm)</th>
@@ -596,7 +699,7 @@ function TabellaPosizioniMultiple({
               )}
               <th className="w-24 pb-2 pr-2 font-medium">Quantità</th>
               <th className="pb-2 pr-2 font-medium">
-                {isMq ? "Mq / Prezzo" : "Ml / Prezzo"}
+                {isGriglia ? "Prezzo" : isMq ? "Mq / Prezzo" : "Ml / Prezzo"}
               </th>
               <th className="w-10 pb-2" />
             </tr>
@@ -607,7 +710,9 @@ function TabellaPosizioniMultiple({
               const mq =
                 isMq && calcolo?.valido ? calcolo.mq : null;
               const ml =
-                !isMq && calcolo?.valido
+                !isMq &&
+                !isGriglia &&
+                calcolo?.valido
                   ? (Number(posizione.lunghezza) || 0) / 100
                   : null;
               const sottoMinimo =
@@ -618,7 +723,67 @@ function TabellaPosizioniMultiple({
 
               return (
                 <tr key={posizione.key} className="align-top">
-                  {isMq ? (
+                  {isGriglia ? (
+                    <>
+                      <td className="py-1.5 pr-2">
+                        <select
+                          aria-label={`Tipologia apertura posizione ${index + 1}`}
+                          value={posizione.tipologia_apertura}
+                          onChange={(e) =>
+                            onChange(
+                              posizione.key,
+                              "tipologia_apertura",
+                              e.target.value,
+                            )
+                          }
+                          className={inputControlClass}
+                        >
+                          <option value="">Seleziona...</option>
+                          {TIPOLOGIE_APERTURA_GRIGLIA.map((t) => (
+                            <option key={t.value} value={t.value}>
+                              {t.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1.5 pr-2">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          aria-label={`Larghezza mm posizione ${index + 1}`}
+                          value={posizione.larghezzaMm}
+                          onChange={(e) =>
+                            onChange(
+                              posizione.key,
+                              "larghezzaMm",
+                              e.target.value,
+                            )
+                          }
+                          className={inputControlClass}
+                        />
+                      </td>
+                      <td className="py-1.5 pr-2">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          aria-label={`Altezza mm posizione ${index + 1}`}
+                          value={posizione.altezzaMm}
+                          onChange={(e) =>
+                            onChange(
+                              posizione.key,
+                              "altezzaMm",
+                              e.target.value,
+                            )
+                          }
+                          className={inputControlClass}
+                        />
+                      </td>
+                    </>
+                  ) : isMq ? (
                     <>
                       <td className="py-1.5 pr-2">
                         <input
@@ -682,18 +847,20 @@ function TabellaPosizioniMultiple({
                   <td className="py-1.5 pr-2 text-sm text-brand-muted">
                     {calcolo?.valido ? (
                       <div className="pt-2">
-                        <p>
-                          {isMq
-                            ? `${(mq ?? 0).toLocaleString("it-IT", {
-                                maximumFractionDigits: 4,
-                              })} mq`
-                            : `${(ml ?? 0).toLocaleString("it-IT", {
-                                maximumFractionDigits: 4,
-                              })} ml`}
-                          {sottoMinimo && (
-                            <> → min. {minimo} mq</>
-                          )}
-                        </p>
+                        {!isGriglia && (
+                          <p>
+                            {isMq
+                              ? `${(mq ?? 0).toLocaleString("it-IT", {
+                                  maximumFractionDigits: 4,
+                                })} mq`
+                              : `${(ml ?? 0).toLocaleString("it-IT", {
+                                  maximumFractionDigits: 4,
+                                })} ml`}
+                            {sottoMinimo && (
+                              <> → min. {minimo} mq</>
+                            )}
+                          </p>
+                        )}
                         <p className="font-medium tabular-nums text-brand-navy">
                           {formatEuro(calcolo.totale)}
                         </p>
@@ -941,6 +1108,9 @@ function PreventivoCategoriaForm() {
   const rigaDaUrl = searchParams.get("riga");
 
   const [riferimento, setRiferimento] = useState<string | null>(null);
+  const [clienteNomePreventivo, setClienteNomePreventivo] = useState<
+    string | null
+  >(null);
   const [nomeCategoria, setNomeCategoria] = useState<string | null>(null);
   const [nomeSottocategoria, setNomeSottocategoria] = useState<string | null>(
     null,
@@ -974,11 +1144,27 @@ function PreventivoCategoriaForm() {
   const [modalitaMq, setModalitaMq] = useState<ModalitaMq>("misure");
   const [mqDiretti, setMqDiretti] = useState("");
   const [riferimentoInterno, setRiferimentoInterno] = useState("");
+  const [descrizioneCliente, setDescrizioneCliente] = useState("");
   const [colore, setColore] = useState("");
   const [coloreInterno, setColoreInterno] = useState("");
   const [coloreEsterno, setColoreEsterno] = useState("");
   const [coloreFerramenta, setColoreFerramenta] = useState("");
   const [vetro, setVetro] = useState("");
+  const [tipologiaApertura, setTipologiaApertura] = useState<
+    TipologiaAperturaGriglia | ""
+  >("");
+  const [larghezzaMm, setLarghezzaMm] = useState("");
+  const [altezzaMm, setAltezzaMm] = useState("");
+  const [extraColoreNome, setExtraColoreNome] = useState<string>(
+    EXTRA_COLORE_BIANCO_MASSA.nome,
+  );
+  const [extraColorePercentuale, setExtraColorePercentuale] = useState(0);
+  const [celleGriglia, setCelleGriglia] = useState<
+    CellaGrigliaPrezzoConTipologia[]
+  >([]);
+  const [extraColoriGriglia, setExtraColoriGriglia] = useState<
+    ExtraColoreGriglia[]
+  >([]);
   const [opzioniColore, setOpzioniColore] = useState<string[]>([]);
   const [opzioniVetro, setOpzioniVetro] = useState<string[]>([]);
   const [posizioni, setPosizioni] = useState<PosizioneForm[]>(() => [
@@ -991,6 +1177,8 @@ function PreventivoCategoriaForm() {
 
   const isModifica = editingRigaId !== null;
   const isPosaAvanzata = isCategoriaPosaAvanzata(nomeCategoria);
+  const isCoibentazione =
+    (nomeCategoria ?? "").trim().toLowerCase() === "coibentazione";
   const variantiPosa = configVariantiPosa(nomeCategoria);
   const mostraSceltaVisPosa = haSceltaVisualizzazionePosa(nomeCategoria);
 
@@ -1000,6 +1188,10 @@ function PreventivoCategoriaForm() {
       larghezza.trim() ||
       altezza.trim() ||
       lunghezza.trim() ||
+      larghezzaMm.trim() ||
+      altezzaMm.trim() ||
+      tipologiaApertura ||
+      (extraColoreNome !== EXTRA_COLORE_BIANCO_MASSA.nome) ||
       prezzoDigitato.trim() ||
       prezzoBds.trim() ||
       mqDiretti.trim() ||
@@ -1016,6 +1208,9 @@ function PreventivoCategoriaForm() {
           p.larghezza.trim() ||
           p.altezza.trim() ||
           p.lunghezza.trim() ||
+          p.tipologia_apertura ||
+          p.larghezzaMm.trim() ||
+          p.altezzaMm.trim() ||
           (p.quantita.trim() !== "" && p.quantita.trim() !== "1"),
       ),
   );
@@ -1042,6 +1237,7 @@ function PreventivoCategoriaForm() {
     setModalitaMq,
     setMqDiretti,
     setRiferimentoInterno,
+    setDescrizioneCliente,
     setColore,
     setColoreInterno,
     setColoreEsterno,
@@ -1055,6 +1251,184 @@ function PreventivoCategoriaForm() {
     () => prodotti.find((p) => String(p.id) === prodottoId),
     [prodotti, prodottoId],
   );
+
+  const mostraCampoColore =
+    !isCoibentazione && !prodottoSelezionato?.ha_vetro;
+
+  const isGriglia = Boolean(
+    prodottoSelezionato && isProdottoGriglia(prodottoSelezionato),
+  );
+
+  /** Carica tutte le celle + extra colore della griglia (filtro tipologia a calcolo). */
+  useEffect(() => {
+    if (!prodottoSelezionato || !isProdottoGriglia(prodottoSelezionato)) {
+      setCelleGriglia([]);
+      setExtraColoriGriglia([]);
+      return;
+    }
+    const grigliaId = Number(prodottoSelezionato.griglia_prezzo_id);
+    let cancelled = false;
+    const supabase = createSupabaseClient();
+
+    void (async () => {
+      const [extraResult, celleResult] = await Promise.all([
+        supabase
+          .from("griglie_prezzo_extra_colore")
+          .select("nome, percentuale")
+          .eq("griglia_id", grigliaId)
+          .order("percentuale"),
+        supabase
+          .from("griglie_prezzo_celle")
+          .select("tipologia_apertura, larghezza, altezza, prezzo")
+          .eq("griglia_id", grigliaId),
+      ]);
+      if (cancelled) return;
+
+      if (extraResult.error) {
+        console.warn("griglie_prezzo_extra_colore:", extraResult.error.message);
+        setExtraColoriGriglia([]);
+      } else {
+        setExtraColoriGriglia(
+          (extraResult.data ?? []).map((e) => ({
+            nome: String(e.nome),
+            percentuale: Number(e.percentuale) || 0,
+          })),
+        );
+      }
+
+      if (celleResult.error) {
+        console.warn("griglie_prezzo_celle:", celleResult.error.message);
+        setCelleGriglia([]);
+        setError(
+          `Impossibile leggere il listino griglia: ${celleResult.error.message}. Verifica le policy RLS (script fix-rls-griglie-prezzo.sql).`,
+        );
+        return;
+      }
+
+      const celle = (celleResult.data ?? []).map((c) => ({
+        tipologia_apertura: String(c.tipologia_apertura ?? ""),
+        larghezza: Number(c.larghezza),
+        altezza: Number(c.altezza),
+        prezzo: Number(c.prezzo),
+      }));
+      setCelleGriglia(celle);
+      if (celle.length === 0) {
+        setError(
+          "Listino griglia non caricabile (0 celle). Esegui lo script RLS fix-rls-griglie-prezzo.sql su Supabase.",
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [prodottoSelezionato]);
+
+  const cellePerTipologia = useCallback(
+    (tipologia: string) =>
+      celleGriglia
+        .filter((c) => c.tipologia_apertura === tipologia)
+        .map(({ larghezza, altezza, prezzo }) => ({
+          larghezza,
+          altezza,
+          prezzo,
+        })),
+    [celleGriglia],
+  );
+
+  const calcolaPrezzoBdsGrigliaPosizione = useCallback(
+    (
+      tipologia: string,
+      L: number,
+      H: number,
+    ): {
+      listino: number | null;
+      bds: number | null;
+      errore: string | null;
+      risultato: ReturnType<typeof interpolaPrezzoGriglia> | null;
+    } => {
+      const celle = cellePerTipologia(tipologia);
+      const risultato = interpolaPrezzoGriglia(celle, L, H);
+      if (!risultato.ok) {
+        return {
+          listino: null,
+          bds: null,
+          errore:
+            risultato.motivo === "nessuna_cella"
+              ? "Listino griglia non disponibile per questa tipologia."
+              : messaggioFuoriRangeGriglia(risultato),
+          risultato,
+        };
+      }
+      const listino = prezzoUnitarioConExtraColore(
+        risultato.prezzoBase,
+        extraColorePercentuale,
+      );
+      const bds = applicaRegolaPrezzo(
+        listino,
+        "sconto_listino",
+        scontoGrigliaPercFromProdotto(prodottoSelezionato?.regola_valore),
+      );
+      return { listino, bds, errore: null, risultato };
+    },
+    [
+      cellePerTipologia,
+      extraColorePercentuale,
+      prodottoSelezionato?.regola_valore,
+    ],
+  );
+
+  /** Risultato griglia in modifica (singola posizione). */
+  const risultatoGriglia = useMemo(() => {
+    if (!isGriglia || !tipologiaApertura) return null;
+    const L = Number(larghezzaMm);
+    const H = Number(altezzaMm);
+    if (!Number.isFinite(L) || !Number.isFinite(H) || L <= 0 || H <= 0) {
+      return null;
+    }
+    return interpolaPrezzoGriglia(cellePerTipologia(tipologiaApertura), L, H);
+  }, [isGriglia, tipologiaApertura, larghezzaMm, altezzaMm, cellePerTipologia]);
+
+  /** Listino da griglia (interpolato + extra colore), prima dello sconto BDS. */
+  const listinoGriglia = useMemo(() => {
+    if (!risultatoGriglia || !risultatoGriglia.ok) return null;
+    return prezzoUnitarioConExtraColore(
+      risultatoGriglia.prezzoBase,
+      extraColorePercentuale,
+    );
+  }, [risultatoGriglia, extraColorePercentuale]);
+
+  const scontoGrigliaPerc = useMemo(
+    () => scontoGrigliaPercFromProdotto(prodottoSelezionato?.regola_valore),
+    [prodottoSelezionato],
+  );
+
+  /** Prezzo BDS unitario: listino griglia × (1 − regola_valore/100). */
+  const prezzoUnitarioGriglia = useMemo(() => {
+    if (listinoGriglia == null || listinoGriglia <= 0) return null;
+    return applicaRegolaPrezzo(
+      listinoGriglia,
+      "sconto_listino",
+      scontoGrigliaPerc,
+    );
+  }, [listinoGriglia, scontoGrigliaPerc]);
+
+  const spiegazioneGriglia = useMemo(() => {
+    if (listinoGriglia == null) return null;
+    return spiegazionePrezzoGriglia(listinoGriglia, scontoGrigliaPerc);
+  }, [listinoGriglia, scontoGrigliaPerc]);
+
+  const erroreGriglia =
+    isGriglia &&
+    tipologiaApertura &&
+    Number(larghezzaMm) > 0 &&
+    Number(altezzaMm) > 0 &&
+    risultatoGriglia &&
+    !risultatoGriglia.ok
+      ? risultatoGriglia.motivo === "nessuna_cella"
+        ? "Listino griglia non caricabile (0 celle). Esegui lo script RLS fix-rls-griglie-prezzo.sql su Supabase."
+        : messaggioFuoriRangeGriglia(risultatoGriglia)
+      : null;
 
   /** Regola BDS dal prodotto selezionato (solo prezzo digitato). */
   const regolaDefault = useMemo((): ConfigRegolaPrezzo | null => {
@@ -1212,7 +1586,7 @@ function PreventivoCategoriaForm() {
         let prodottiQuery = supabase
           .from("prodotti")
           .select(
-            "id, categoria_id, sottocategoria_id, nome, tipo_prezzo, prezzo_unitario, minimo, posa_prezzo, descrizione_tecnica, regola_prezzo, regola_valore, etichetta_prezzo, ha_vetro",
+            "id, categoria_id, sottocategoria_id, nome, tipo_prezzo, prezzo_unitario, minimo, posa_prezzo, descrizione_tecnica, descrizione_cliente, regola_prezzo, regola_valore, etichetta_prezzo, ha_vetro, griglia_prezzo_id",
           )
           .eq("categoria_id", categoriaId)
           .order("nome");
@@ -1251,7 +1625,7 @@ function PreventivoCategoriaForm() {
         ] = await Promise.all([
           supabase
             .from("preventivi")
-            .select("riferimento")
+            .select("riferimento, cliente_nome")
             .eq("id", preventivoId)
             .single(),
           supabase
@@ -1313,15 +1687,19 @@ function PreventivoCategoriaForm() {
         const prodottiNormalizzati: Prodotto[] = (prodottiResult.data ?? []).map(
           (p) => ({
             ...(p as Prodotto),
+            descrizione_cliente: p.descrizione_cliente ?? null,
             regola_prezzo: p.regola_prezzo ?? null,
             regola_valore:
               p.regola_valore != null ? Number(p.regola_valore) : null,
             etichetta_prezzo: p.etichetta_prezzo ?? null,
             ha_vetro: Boolean(p.ha_vetro),
+            griglia_prezzo_id:
+              p.griglia_prezzo_id != null ? Number(p.griglia_prezzo_id) : null,
           }),
         );
 
         setRiferimento(preventivoResult.data.riferimento);
+        setClienteNomePreventivo(preventivoResult.data.cliente_nome ?? null);
         setNomeCategoria(categoriaResult.data.nome);
         setNomeSottocategoria(sottocategoriaResult.data?.nome ?? null);
         setProdotti(prodottiNormalizzati);
@@ -1357,7 +1735,34 @@ function PreventivoCategoriaForm() {
               categoriaResult.data.nome,
               prodottoRiga ? configRegolaPrezzoDa(prodottoRiga) : null,
             );
+            setTipologiaApertura(
+              (riga.tipologia_apertura as TipologiaAperturaGriglia) || "",
+            );
+            setLarghezzaMm(
+              riga.larghezza_mm != null ? String(riga.larghezza_mm) : "",
+            );
+            setAltezzaMm(
+              riga.altezza_mm != null ? String(riga.altezza_mm) : "",
+            );
+            setExtraColoreNome(
+              riga.extra_colore_nome?.trim() || EXTRA_COLORE_BIANCO_MASSA.nome,
+            );
+            setExtraColorePercentuale(
+              riga.extra_colore_percentuale != null
+                ? Number(riga.extra_colore_percentuale)
+                : 0,
+            );
             setRicercaProdotto(riga.prodotti.nome);
+          }
+        } else if (prodottiNormalizzati.length === 1) {
+          const solo = prodottiNormalizzati[0];
+          setProdottoId(String(solo.id));
+          setRicercaProdotto(solo.nome);
+          setDescrizioneCliente(
+            sanitizeDescrizioneHtml(solo.descrizione_cliente ?? ""),
+          );
+          if (isCategoriaPosaAvanzata(categoriaResult.data.nome)) {
+            setPosa(true);
           }
         } else if (isCategoriaPosaAvanzata(categoriaResult.data.nome)) {
           setPosa(true);
@@ -1372,13 +1777,15 @@ function PreventivoCategoriaForm() {
     loadData();
   }, [preventivoId, categoriaId, sottocategoriaId, rigaDaUrl]);
 
-  const tipoTabella: "mq" | "ml" | null =
+  const tipoTabella: "mq" | "ml" | "griglia" | null =
     !isModifica && prodottoSelezionato
-      ? prodottoSelezionato.tipo_prezzo === "mq" && modalitaMq === "misure"
-        ? "mq"
-        : prodottoSelezionato.tipo_prezzo === "ml"
-          ? "ml"
-          : null
+      ? isProdottoGriglia(prodottoSelezionato)
+        ? "griglia"
+        : prodottoSelezionato.tipo_prezzo === "mq" && modalitaMq === "misure"
+          ? "mq"
+          : prodottoSelezionato.tipo_prezzo === "ml"
+            ? "ml"
+            : null
       : null;
   const usaTabellaPosizioni = tipoTabella != null;
 
@@ -1387,6 +1794,37 @@ function PreventivoCategoriaForm() {
 
     const quantitaNum = Number(quantita);
     if (!Number.isFinite(quantitaNum) || quantitaNum <= 0) return null;
+
+    if (isProdottoGriglia(prodottoSelezionato)) {
+      if (prezzoUnitarioGriglia == null || prezzoUnitarioGriglia <= 0) {
+        return null;
+      }
+      const misure = parseMisureForm(
+        prodottoSelezionato,
+        larghezza,
+        altezza,
+        lunghezza,
+        modalitaMq,
+        mqDiretti,
+      );
+      return calcolaRigaDaMisure({
+        prodotto: {
+          ...prodottoSelezionato,
+          prezzo_unitario: prezzoUnitarioGriglia,
+        },
+        misure,
+        quantita: quantitaNum,
+        posa,
+        flags: flagAttivi,
+        isPosaAvanzata,
+        nomeCategoria,
+        posaTipo,
+        posaManuale,
+        posaImporto,
+        prezzoDigitato: "",
+        modalitaMq,
+      });
+    }
 
     const misure = parseMisureForm(
       prodottoSelezionato,
@@ -1423,6 +1861,7 @@ function PreventivoCategoriaForm() {
     flagAttivi,
     isPosaAvanzata,
     prezzoBdsPerCalcolo,
+    prezzoUnitarioGriglia,
     nomeCategoria,
     posaTipo,
     posaManuale,
@@ -1434,6 +1873,39 @@ function PreventivoCategoriaForm() {
   const calcoliPosizioni = useMemo(() => {
     if (!prodottoSelezionato || !tipoTabella) return [];
     return posizioni.map((posizione) => {
+      if (tipoTabella === "griglia") {
+        const parsed = parsePosizioneGriglia(posizione);
+        if (!parsed.valid || !parsed.tipologia) return null;
+        const { bds, errore } = calcolaPrezzoBdsGrigliaPosizione(
+          parsed.tipologia,
+          parsed.larghezzaMm,
+          parsed.altezzaMm,
+        );
+        if (errore || bds == null || bds <= 0) return null;
+        return calcolaRigaDaMisure({
+          prodotto: {
+            ...prodottoSelezionato,
+            prezzo_unitario: bds,
+          },
+          misure: {
+            valid: true,
+            larghezzaCm: null,
+            altezzaCm: null,
+            lunghezzaCm: null,
+            mqDirettiNum: null,
+          },
+          quantita: parsed.quantitaNum,
+          posa,
+          flags: flagAttivi,
+          isPosaAvanzata,
+          nomeCategoria,
+          posaTipo,
+          posaManuale,
+          posaImporto,
+          prezzoDigitato: "",
+          modalitaMq: "misure",
+        });
+      }
       const parsed = parsePosizioneForm(prodottoSelezionato, posizione);
       if (!parsed.valid) return null;
       return calcolaRigaDaMisure({
@@ -1463,6 +1935,7 @@ function PreventivoCategoriaForm() {
     posaManuale,
     posaImporto,
     prezzoBdsPerCalcolo,
+    calcolaPrezzoBdsGrigliaPosizione,
   ]);
 
   const posizioniValide = useMemo(() => {
@@ -1589,15 +2062,32 @@ function PreventivoCategoriaForm() {
     setModalitaMq("misure");
     setMqDiretti("");
     setRiferimentoInterno("");
+    setDescrizioneCliente("");
     setColore("");
     setColoreInterno("");
     setColoreEsterno("");
     setColoreFerramenta("");
     setVetro("");
+    setTipologiaApertura("");
+    setLarghezzaMm("");
+    setAltezzaMm("");
+    setExtraColoreNome(EXTRA_COLORE_BIANCO_MASSA.nome);
+    setExtraColorePercentuale(0);
+    setCelleGriglia([]);
+    setExtraColoriGriglia([]);
     setPosizioni([creaPosizioneVuota()]);
     setFlagEsclusivi({});
     setFlagMultipli({});
     setEditingRigaId(null);
+
+    if (prodotti.length === 1) {
+      const solo = prodotti[0];
+      setProdottoId(String(solo.id));
+      setRicercaProdotto(solo.nome);
+      setDescrizioneCliente(
+        sanitizeDescrizioneHtml(solo.descrizione_cliente ?? ""),
+      );
+    }
   }
 
   function aggiornaPosizione(
@@ -1641,6 +2131,9 @@ function PreventivoCategoriaForm() {
     setProdottoId(String(prodotto.id));
     setRicercaProdotto(prodotto.nome);
     setElencoProdottiAperto(false);
+    setDescrizioneCliente(
+      sanitizeDescrizioneHtml(prodotto.descrizione_cliente ?? ""),
+    );
     resetCampiProdotto(
       setLarghezza,
       setAltezza,
@@ -1659,6 +2152,11 @@ function PreventivoCategoriaForm() {
     setPosaRigaSeparata(false);
     setPrezzoDigitato("");
     setPrezzoBds("");
+    setTipologiaApertura("");
+    setLarghezzaMm("");
+    setAltezzaMm("");
+    setExtraColoreNome(EXTRA_COLORE_BIANCO_MASSA.nome);
+    setExtraColorePercentuale(0);
     if (!prodotto.ha_vetro) {
       setColoreInterno("");
       setColoreEsterno("");
@@ -1679,6 +2177,19 @@ function PreventivoCategoriaForm() {
       nomeCategoria,
       prodottoRiga ? configRegolaPrezzoDa(prodottoRiga) : null,
     );
+    setTipologiaApertura(
+      (riga.tipologia_apertura as TipologiaAperturaGriglia) || "",
+    );
+    setLarghezzaMm(riga.larghezza_mm != null ? String(riga.larghezza_mm) : "");
+    setAltezzaMm(riga.altezza_mm != null ? String(riga.altezza_mm) : "");
+    setExtraColoreNome(
+      riga.extra_colore_nome?.trim() || EXTRA_COLORE_BIANCO_MASSA.nome,
+    );
+    setExtraColorePercentuale(
+      riga.extra_colore_percentuale != null
+        ? Number(riga.extra_colore_percentuale)
+        : 0,
+    );
     setRicercaProdotto(riga.prodotti.nome);
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1694,6 +2205,19 @@ function PreventivoCategoriaForm() {
       nomeCategoria,
       prodottoRiga ? configRegolaPrezzoDa(prodottoRiga) : null,
     );
+    setTipologiaApertura(
+      (riga.tipologia_apertura as TipologiaAperturaGriglia) || "",
+    );
+    setLarghezzaMm(riga.larghezza_mm != null ? String(riga.larghezza_mm) : "");
+    setAltezzaMm(riga.altezza_mm != null ? String(riga.altezza_mm) : "");
+    setExtraColoreNome(
+      riga.extra_colore_nome?.trim() || EXTRA_COLORE_BIANCO_MASSA.nome,
+    );
+    setExtraColorePercentuale(
+      riga.extra_colore_percentuale != null
+        ? Number(riga.extra_colore_percentuale)
+        : 0,
+    );
     setRicercaProdotto(riga.prodotti.nome);
     setPosizioni([
       {
@@ -1702,6 +2226,11 @@ function PreventivoCategoriaForm() {
         altezza: riga.altezza_cm != null ? String(riga.altezza_cm) : "",
         lunghezza: riga.lunghezza_cm != null ? String(riga.lunghezza_cm) : "",
         quantita: String(riga.quantita),
+        tipologia_apertura:
+          (riga.tipologia_apertura as TipologiaAperturaGriglia) || "",
+        larghezzaMm:
+          riga.larghezza_mm != null ? String(riga.larghezza_mm) : "",
+        altezzaMm: riga.altezza_mm != null ? String(riga.altezza_mm) : "",
       },
     ]);
     setError(null);
@@ -1740,6 +2269,29 @@ function PreventivoCategoriaForm() {
   async function handleSalvaRiga() {
     if (!prodottoSelezionato) return;
 
+    const isGrigliaProd = isProdottoGriglia(prodottoSelezionato);
+    const usaGrigliaMulti = isGrigliaProd && tipoTabella === "griglia";
+
+    if (isGrigliaProd && !usaGrigliaMulti) {
+      if (!tipologiaApertura) {
+        setError("Seleziona la tipologia di apertura.");
+        return;
+      }
+      const L = Number(larghezzaMm);
+      const H = Number(altezzaMm);
+      if (!Number.isFinite(L) || !Number.isFinite(H) || L <= 0 || H <= 0) {
+        setError("Inserisci larghezza e altezza in mm.");
+        return;
+      }
+      if (erroreGriglia || prezzoUnitarioGriglia == null) {
+        setError(
+          erroreGriglia ??
+            "Misura non disponibile a listino per questa tipologia.",
+        );
+        return;
+      }
+    }
+
     if (isPosaAvanzata && posa && posaManuale) {
       const posaImportoNum = Number(posaImporto);
       if (!Number.isFinite(posaImportoNum) || posaImportoNum < 0) {
@@ -1750,7 +2302,9 @@ function PreventivoCategoriaForm() {
 
     const prezzoInserito = isProdottoPrezzoDigitato(prodottoSelezionato)
       ? Number(prezzoDigitato)
-      : null;
+      : isGrigliaProd && !usaGrigliaMulti && listinoGriglia != null
+        ? listinoGriglia
+        : null;
     const prezzoLibero = prezzoInserito;
     const regolaApplicata =
       isProdottoPrezzoDigitato(prodottoSelezionato) && regolaDefault
@@ -1758,15 +2312,21 @@ function PreventivoCategoriaForm() {
             regolaDefault.regola,
             regolaDefault.valore,
           )
-        : null;
+        : isGrigliaProd
+          ? serializzaRegolaApplicata("sconto_listino", scontoGrigliaPerc)
+          : null;
 
     const descrizioneTecnica =
       prodottoSelezionato.descrizione_tecnica?.trim() ||
       prodottoSelezionato.nome;
+    const descrizioneClienteSalvata = descrizioneCliente.trim()
+      ? sanitizeDescrizioneHtml(descrizioneCliente)
+      : null;
 
     const riferimentoSalvato = riferimentoInterno.trim() || null;
     const haVetro = prodottoSelezionato.ha_vetro;
-    const coloreSalvato = haVetro ? null : colore.trim() || null;
+    const coloreSalvato =
+      haVetro || isCoibentazione ? null : colore.trim() || null;
     const coloreInternoSalvato = haVetro
       ? coloreInterno.trim() || null
       : null;
@@ -1787,6 +2347,30 @@ function PreventivoCategoriaForm() {
       colore_ferramenta: coloreFerramentaSalvato,
       vetro: vetroSalvato,
     };
+
+    const payloadGrigliaComune = isGrigliaProd
+      ? {
+          extra_colore_nome: extraColoreNome || EXTRA_COLORE_BIANCO_MASSA.nome,
+          extra_colore_percentuale: extraColorePercentuale,
+        }
+      : {
+          extra_colore_nome: null as string | null,
+          extra_colore_percentuale: null as number | null,
+        };
+
+    const payloadGrigliaSingola = isGrigliaProd
+      ? {
+          tipologia_apertura: tipologiaApertura || null,
+          larghezza_mm: Number(larghezzaMm) || null,
+          altezza_mm: Number(altezzaMm) || null,
+          ...payloadGrigliaComune,
+        }
+      : {
+          tipologia_apertura: null as string | null,
+          larghezza_mm: null as number | null,
+          altezza_mm: null as number | null,
+          ...payloadGrigliaComune,
+        };
 
     function posaPayloadDaCalcolo(risultato: RisultatoCalcoloRiga) {
       if (isPosaAvanzata) {
@@ -1856,6 +2440,7 @@ function PreventivoCategoriaForm() {
           prezzo_inserito: prezzoInserito,
           regola_applicata: regolaApplicata,
           descrizione_tecnica: descrizioneTecnica,
+          descrizione_cliente: descrizioneClienteSalvata,
           modalita_mq: isMq ? modalitaMq : null,
           mq_diretti: isMq && modalitaMq === "diretti" ? misure.mqDirettiNum : null,
           larghezza_cm:
@@ -1864,6 +2449,7 @@ function PreventivoCategoriaForm() {
           lunghezza_cm: misure.lunghezzaCm,
           riferimento_interno: riferimentoSalvato,
           ...payloadColori,
+          ...payloadGrigliaSingola,
           ...posaPayloadDaCalcolo(calcolo),
         })
         .eq("id", editingRigaId)
@@ -1916,13 +2502,25 @@ function PreventivoCategoriaForm() {
       misure: ReturnType<typeof parseMisureForm>;
       quantitaNum: number;
       calcolo: RisultatoCalcoloRiga;
+      prezzoInseritoRiga: number | null;
+      payloadGrigliaRiga: {
+        tipologia_apertura: string | null;
+        larghezza_mm: number | null;
+        altezza_mm: number | null;
+        extra_colore_nome: string | null;
+        extra_colore_percentuale: number | null;
+      };
     };
 
     let daInserire: RigaDaInserire[] = [];
 
     if (tipoTabella) {
       if (haPosizioniIncomplete) {
-        setError("Completa le misure di ogni posizione o rimuovila.");
+        setError(
+          tipoTabella === "griglia"
+            ? "Completa tipologia e misure di ogni posizione o rimuovila."
+            : "Completa le misure di ogni posizione o rimuovila.",
+        );
         setSaving(false);
         return;
       }
@@ -1931,11 +2529,45 @@ function PreventivoCategoriaForm() {
         return;
       }
       daInserire = posizioniValide.map(({ posizione, calcolo: calc }) => {
+        if (tipoTabella === "griglia") {
+          const parsed = parsePosizioneGriglia(posizione);
+          const { listino } = calcolaPrezzoBdsGrigliaPosizione(
+            parsed.tipologia,
+            parsed.larghezzaMm,
+            parsed.altezzaMm,
+          );
+          return {
+            misure: {
+              valid: true,
+              larghezzaCm: null,
+              altezzaCm: null,
+              lunghezzaCm: null,
+              mqDirettiNum: null,
+            },
+            quantitaNum: parsed.quantitaNum,
+            calcolo: calc,
+            prezzoInseritoRiga: listino,
+            payloadGrigliaRiga: {
+              tipologia_apertura: parsed.tipologia || null,
+              larghezza_mm: parsed.larghezzaMm || null,
+              altezza_mm: parsed.altezzaMm || null,
+              ...payloadGrigliaComune,
+            },
+          };
+        }
         const parsed = parsePosizioneForm(prodottoSelezionato, posizione);
         return {
           misure: parsed,
           quantitaNum: parsed.quantitaNum,
           calcolo: calc,
+          prezzoInseritoRiga: prezzoInserito,
+          payloadGrigliaRiga: {
+            tipologia_apertura: null,
+            larghezza_mm: null,
+            altezza_mm: null,
+            extra_colore_nome: null,
+            extra_colore_percentuale: null,
+          },
         };
       });
     } else {
@@ -1960,7 +2592,15 @@ function PreventivoCategoriaForm() {
         setSaving(false);
         return;
       }
-      daInserire = [{ misure, quantitaNum, calcolo }];
+      daInserire = [
+        {
+          misure,
+          quantitaNum,
+          calcolo,
+          prezzoInseritoRiga: prezzoInserito,
+          payloadGrigliaRiga: payloadGrigliaSingola,
+        },
+      ];
     }
 
     let numeroPosizione: number;
@@ -1977,10 +2617,11 @@ function PreventivoCategoriaForm() {
       prodotto_id: prodottoSelezionato.id,
       quantita: riga.quantitaNum,
       prezzo_riga: riga.calcolo.prezzo_riga,
-      prezzo_libero: prezzoLibero,
-      prezzo_inserito: prezzoInserito,
+      prezzo_libero: riga.prezzoInseritoRiga,
+      prezzo_inserito: riga.prezzoInseritoRiga,
       regola_applicata: regolaApplicata,
       descrizione_tecnica: descrizioneTecnica,
+      descrizione_cliente: descrizioneClienteSalvata,
       numero_posizione: numeroPosizione + index,
       modalita_mq: isMq ? (tipoTabella ? "misure" : modalitaMq) : null,
       mq_diretti:
@@ -1998,6 +2639,7 @@ function PreventivoCategoriaForm() {
       lunghezza_cm: riga.misure.lunghezzaCm,
       riferimento_interno: riferimentoSalvato,
       ...payloadColori,
+      ...riga.payloadGrigliaRiga,
       ...posaPayloadDaCalcolo(riga.calcolo),
     }));
 
@@ -2089,6 +2731,7 @@ function PreventivoCategoriaForm() {
           riga.descrizione_tecnica ??
           riga.prodotti.descrizione_tecnica ??
           riga.prodotti.nome,
+        descrizione_cliente: riga.descrizione_cliente,
         modalita_mq: riga.modalita_mq,
         mq_diretti: riga.mq_diretti,
         numero_posizione: numeroPosizione,
@@ -2234,7 +2877,9 @@ function PreventivoCategoriaForm() {
 
   const breadcrumbItems = [
     {
-      label: riferimento ? `Preventivo ${riferimento}` : "Preventivo",
+      label: riferimento
+        ? titoloPreventivo(clienteNomePreventivo, riferimento)
+        : "Preventivo",
       href: `/preventivo/${preventivoId}`,
     },
     {
@@ -2282,6 +2927,16 @@ function PreventivoCategoriaForm() {
 
           {/* 1. Prodotto */}
           <FormBlock title="Prodotto">
+            {prodotti.length === 1 && prodottoSelezionato ? (
+              <div className="sm:col-span-2">
+                <span className="mb-1.5 block text-sm text-brand-label">
+                  Prodotto
+                </span>
+                <p className="rounded-md border border-brand-border bg-brand-surface px-3 py-2.5 text-sm font-medium text-brand-navy">
+                  {prodottoSelezionato.nome}
+                </p>
+              </div>
+            ) : (
             <div
               ref={prodottoComboboxRef}
               className="relative flex flex-col gap-1.5 sm:col-span-2"
@@ -2301,6 +2956,7 @@ function PreventivoCategoriaForm() {
                   setElencoProdottiAperto(true);
                 if (prodottoId) {
                   setProdottoId("");
+                  setDescrizioneCliente("");
                   setPrezzoDigitato("");
                   setColore("");
                   setColoreInterno("");
@@ -2365,6 +3021,27 @@ function PreventivoCategoriaForm() {
                 </p>
               )}
             </div>
+            )}
+
+            {prodottoSelezionato && (
+              <div className="sm:col-span-2">
+                <span className="mb-1.5 block text-sm text-brand-label">
+                  Descrizione commerciale
+                </span>
+                <DescrizioneCommercialeEditor
+                  value={descrizioneCliente}
+                  onChange={setDescrizioneCliente}
+                  rigaKey={
+                    editingRigaId != null
+                      ? `cat-riga-${editingRigaId}`
+                      : `cat-nuovo-${prodottoSelezionato.id}`
+                  }
+                />
+                <p className="mt-1 text-xs text-brand-muted">
+                  Compare nel PDF e in Componi.
+                </p>
+              </div>
+            )}
 
             <Input
               label="Riferimento interno"
@@ -2411,7 +3088,7 @@ function PreventivoCategoriaForm() {
                   wrapperClassName="sm:col-span-2"
                 />
               </>
-            ) : (
+            ) : mostraCampoColore ? (
               <ComboboxLibero
                 label="Colore"
                 value={colore}
@@ -2421,11 +3098,126 @@ function PreventivoCategoriaForm() {
                 hint="Finisce in automatico nella colonna Note (PDF / Componi)"
                 wrapperClassName="sm:col-span-2"
               />
-            )}
+            ) : null}
           </FormBlock>
+
+          {isGriglia && (
+            <FormBlock title="Listino griglia">
+              {isModifica && (
+                <>
+                  <div className="sm:col-span-2">
+                    <label className="mb-1.5 block text-sm text-brand-label">
+                      Tipologia apertura
+                    </label>
+                    <select
+                      value={tipologiaApertura}
+                      onChange={(e) =>
+                        setTipologiaApertura(
+                          e.target.value as TipologiaAperturaGriglia | "",
+                        )
+                      }
+                      className={inputControlClass}
+                    >
+                      <option value="">Seleziona tipologia...</option>
+                      {TIPOLOGIE_APERTURA_GRIGLIA.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Input
+                    label="Larghezza (mm)"
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="numeric"
+                    value={larghezzaMm}
+                    onChange={(e) => setLarghezzaMm(e.target.value)}
+                  />
+                  <Input
+                    label="Altezza (mm)"
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="numeric"
+                    value={altezzaMm}
+                    onChange={(e) => setAltezzaMm(e.target.value)}
+                  />
+                </>
+              )}
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block text-sm text-brand-label">
+                  Extra colore / finitura griglia
+                </label>
+                <select
+                  value={extraColoreNome}
+                  onChange={(e) => {
+                    const nome = e.target.value;
+                    setExtraColoreNome(nome);
+                    if (nome === EXTRA_COLORE_BIANCO_MASSA.nome) {
+                      setExtraColorePercentuale(0);
+                      return;
+                    }
+                    const found = extraColoriGriglia.find((x) => x.nome === nome);
+                    setExtraColorePercentuale(found?.percentuale ?? 0);
+                  }}
+                  className={inputControlClass}
+                >
+                  <option value={EXTRA_COLORE_BIANCO_MASSA.nome}>
+                    Bianco massa (senza supplemento)
+                  </option>
+                  {extraColoriGriglia.map((ex) => (
+                    <option key={ex.nome} value={ex.nome}>
+                      {ex.nome} (+{ex.percentuale}%)
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-brand-muted">
+                  Supplemento % condiviso da tutte le posizioni. Il colore
+                  interno/esterno sopra resta solo descrittivo.
+                </p>
+              </div>
+              {isModifica && erroreGriglia && (
+                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:col-span-2">
+                  {erroreGriglia}
+                </p>
+              )}
+              {isModifica && spiegazioneGriglia && !erroreGriglia && (
+                <p className="rounded-md border border-brand-navy/20 bg-brand-navy/5 px-3 py-2 text-sm font-medium text-brand-navy sm:col-span-2">
+                  {spiegazioneGriglia}
+                  {risultatoGriglia?.ok && extraColorePercentuale > 0
+                    ? ` · base griglia ${formatEuro(risultatoGriglia.prezzoBase)} + extra colore ${extraColorePercentuale}%`
+                    : ""}
+                </p>
+              )}
+              {!isModifica && scontoGrigliaPerc > 0 && (
+                <p className="rounded-md border border-brand-navy/20 bg-brand-navy/5 px-3 py-2 text-sm font-medium text-brand-navy sm:col-span-2">
+                  Sconto BDS {scontoGrigliaPerc}% applicato sul listino griglia di
+                  ogni posizione
+                  {extraColorePercentuale > 0
+                    ? ` (dopo extra colore +${extraColorePercentuale}%)`
+                    : ""}
+                </p>
+              )}
+            </FormBlock>
+          )}
 
           {/* 2. Misure e quantità */}
           <FormBlock title="Misure e quantità">
+            {usaTabellaPosizioni && tipoTabella === "griglia" && (
+              <TabellaPosizioniMultiple
+                tipo="griglia"
+                minimo={null}
+                posizioni={posizioni}
+                calcoli={calcoliPosizioni}
+                totale={totaleAnteprima}
+                onChange={aggiornaPosizione}
+                onAdd={aggiungiPosizione}
+                onRemove={rimuoviPosizione}
+                onDuplica={duplicaPosizione}
+              />
+            )}
             {prodottoSelezionato?.tipo_prezzo === "mq" && (
               <div className="space-y-4 sm:col-span-2">
                 <div className="flex flex-wrap gap-2">
@@ -2746,6 +3538,13 @@ function PreventivoCategoriaForm() {
                 disabled={
                   !prodottoSelezionato ||
                   saving ||
+                  (isGriglia &&
+                    !usaTabellaPosizioni &&
+                    (Boolean(erroreGriglia) ||
+                      !tipologiaApertura ||
+                      prezzoUnitarioGriglia == null ||
+                      !Number(larghezzaMm) ||
+                      !Number(altezzaMm))) ||
                   (usaTabellaPosizioni
                     ? posizioniValide.length === 0 || haPosizioniIncomplete
                     : !calcolo?.valido)

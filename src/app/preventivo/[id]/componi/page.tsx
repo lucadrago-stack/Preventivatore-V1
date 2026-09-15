@@ -42,7 +42,7 @@ import {
   useFlushBeforeNavigate,
 } from "@/hooks/useAutosave";
 import { createSupabaseClient } from "@/lib/supabase";
-import { formatEuro, formatDataPerInput, normalizzaRelazione } from "@/lib/format";
+import { formatEuro, formatDataPerInput, normalizzaRelazione, titoloPreventivo } from "@/lib/format";
 import {
   defaultDurateMostrate,
   mapConvenzioneRow,
@@ -182,6 +182,12 @@ type RigaEditabile = {
   colore_esterno: string;
   colore_ferramenta: string;
   vetro: string;
+  tipologia_apertura: string;
+  larghezza_mm: number | null;
+  altezza_mm: number | null;
+  extra_colore_nome: string;
+  extra_colore_percentuale: number | null;
+  nota_griglia: string;
   tipo_riga: "prodotto" | "testo" | "posa";
   testo_libero: string;
   visibile_pdf: boolean;
@@ -198,7 +204,15 @@ type ServizioComplementare = {
   ordine: number;
 };
 
-const SERVIZI_DEFAULT = [
+/** Template catalogo (admin → Parametri → Servizi). */
+type ServizioCatalogo = {
+  descrizione: string;
+  nota: string;
+  importo: number;
+  ordine: number;
+};
+
+const SERVIZI_DEFAULT: ServizioCatalogo[] = [
   {
     descrizione: "Pratica ENEA per detrazione fiscale",
     nota: "Non previsto",
@@ -223,7 +237,31 @@ const SERVIZI_DEFAULT = [
     importo: 0,
     ordine: 4,
   },
-] as const;
+];
+
+function normalizzaDescrizioneServizio(valore: string): string {
+  return valore.trim().toLowerCase();
+}
+
+async function caricaServiziCatalogo(
+  supabase: SupabaseClient,
+): Promise<ServizioCatalogo[]> {
+  const { data, error } = await supabase
+    .from("servizi_complementari_default")
+    .select("descrizione, nota, importo, ordine")
+    .order("ordine");
+
+  if (error || !data || data.length === 0) {
+    return SERVIZI_DEFAULT.map((s) => ({ ...s }));
+  }
+
+  return data.map((s, index) => ({
+    descrizione: s.descrizione ?? "Servizio",
+    nota: s.nota ?? "",
+    importo: Number(s.importo ?? 0),
+    ordine: Number(s.ordine ?? index + 1),
+  }));
+}
 
 const serviziInsertLocks = new Map<string, Promise<ServizioDb[]>>();
 
@@ -307,10 +345,13 @@ async function ensureServiziComplementari(
       );
       if (ricontrollo.length > 0) return ricontrollo;
 
+      // Preferisci template da DB; fallback a costanti codice.
+      const defaults: ServizioCatalogo[] = await caricaServiziCatalogo(supabase);
+
       const { data: serviziInseriti, error: insertError } = await supabase
         .from("servizi_complementari")
         .insert(
-          SERVIZI_DEFAULT.map((servizio) => ({
+          defaults.map((servizio) => ({
             preventivo_id: Number(preventivoId),
             descrizione: servizio.descrizione,
             nota: servizio.nota,
@@ -347,6 +388,25 @@ function dataOggiPerInput(): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Snapshot totali per dirty/beforeunload.
+ * Esclude `prezzoNetto` display: viene ricalcolato da solo e altrimenti
+ * lascia isDirty=true anche dopo autosave / al solo caricamento pagina.
+ */
+function serializzaSnapTotali(t: {
+  scontoPercentuale: string;
+  scontoPercentuale2: string;
+  ivaPercentuale: number;
+  nettoOverride: number | null;
+}): string {
+  return JSON.stringify({
+    scontoPercentuale: t.scontoPercentuale,
+    scontoPercentuale2: t.scontoPercentuale2,
+    ivaPercentuale: t.ivaPercentuale,
+    nettoOverride: t.nettoOverride,
+  });
 }
 
 function revisioneDaVersioni(
@@ -570,7 +630,7 @@ function RigaRow({
           onDragEnd={onDragEnd}
         />
       </td>
-      <td className="px-3 py-2 align-top">
+      <td className="w-14 px-2 py-2 align-top">
         {riga.is_libera ? (
           <input
             type="number"
@@ -585,7 +645,7 @@ function RigaRow({
                 (e.target as HTMLElement).blur();
               }
             }}
-            className="w-16 rounded border border-zinc-300 px-2 py-1 text-sm"
+            className="w-full rounded border border-zinc-300 px-1 py-1 text-sm"
           />
         ) : (
           riga.quantita
@@ -610,7 +670,7 @@ function RigaRow({
           <span className="mt-1 block text-xs text-zinc-500">nascosta</span>
         )}
       </td>
-      <td className="px-3 py-2 align-top">
+      <td className="w-44 px-3 py-2 align-top">
         <textarea
           value={riga.nota}
           onChange={(e) => onAggiornaNota(riga.key, e.target.value)}
@@ -630,7 +690,7 @@ function RigaRow({
           </div>
         )}
       </td>
-      <td className="px-3 py-2 text-right align-top font-medium whitespace-nowrap">
+      <td className="w-28 px-3 py-2 text-right align-top font-medium whitespace-nowrap">
         {riga.is_libera ? (
           <input
             type="number"
@@ -645,7 +705,7 @@ function RigaRow({
                 (e.target as HTMLElement).blur();
               }
             }}
-            className="w-28 rounded border border-zinc-300 px-2 py-1 text-right text-sm"
+            className="w-full rounded border border-zinc-300 px-2 py-1 text-right text-sm"
           />
         ) : importoDisplay != null ? (
           formatEuro(importoDisplay)
@@ -653,7 +713,7 @@ function RigaRow({
           "—"
         )}
       </td>
-      <td className="px-3 py-2 align-top text-center">
+      <td className="w-20 px-2 py-2 align-top text-center">
         <button
           type="button"
           onClick={() => onToggleVisibile(riga.key)}
@@ -663,13 +723,13 @@ function RigaRow({
             {riga.visibile_pdf ? "Visibile" : "Nascosta"}
         </button>
       </td>
-        <td className="px-2 py-2 align-top">
+        <td className="w-24 px-2 py-2 align-top">
           <div className="flex flex-col gap-1">
             <button
               type="button"
               onClick={() => onDuplica(riga)}
               disabled={duplicating || deleting}
-              className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-xs font-semibold disabled:opacity-50"
+              className="min-h-[44px] rounded-md border border-zinc-300 px-2 text-xs font-semibold disabled:opacity-50"
             >
               {duplicating ? "..." : "Duplica"}
             </button>
@@ -677,7 +737,7 @@ function RigaRow({
               type="button"
               onClick={() => onElimina(riga)}
               disabled={duplicating || deleting}
-              className="min-h-[44px] rounded-md border border-red-200 px-3 text-xs font-semibold text-brand-danger disabled:opacity-50"
+              className="min-h-[44px] rounded-md border border-red-200 px-2 text-xs font-semibold text-brand-danger disabled:opacity-50"
             >
               {deleting ? "..." : "Elimina"}
             </button>
@@ -721,6 +781,12 @@ export default function ComponiPreventivoPage() {
   const [preventivo, setPreventivo] = useState<PreventivoComponi | null>(null);
   const [righe, setRighe] = useState<RigaEditabile[]>([]);
   const [servizi, setServizi] = useState<ServizioComplementare[]>([]);
+  const [serviziCatalogo, setServiziCatalogo] = useState<ServizioCatalogo[]>(
+    () => SERVIZI_DEFAULT.map((s) => ({ ...s })),
+  );
+  const [menuServiziAperto, setMenuServiziAperto] = useState(false);
+  const [addingServizio, setAddingServizio] = useState(false);
+  const menuServiziRef = useRef<HTMLDivElement>(null);
   const [scontoPercentuale, setScontoPercentuale] = useState("10");
   const [scontoPercentuale2, setScontoPercentuale2] = useState("0");
   /** Sconto1 a piena precisione (da netto digitato); null = usa il valore del campo. */
@@ -957,7 +1023,7 @@ export default function ComponiPreventivoPage() {
   const loadData = useCallback(async () => {
     const supabase = createSupabaseClient();
 
-    const [preventivoResult, righeResult, serviziData, versioniData] =
+    const [preventivoResult, righeResult, serviziData, versioniData, catalogoData] =
       await Promise.all([
       supabase
         .from("preventivi")
@@ -976,13 +1042,15 @@ export default function ComponiPreventivoPage() {
           `id, quantita, prezzo_riga, posa_importo, posa, posa_riga_separata, descrizione_cliente, descrizione_libera,
           descrizione_tecnica, nota, colore, colore_interno, colore_esterno, colore_ferramenta, vetro, prodotto_id,
           ordine, visibile_pdf, tipo_riga, testo_libero,
-          prodotti(nome, descrizione_cliente, descrizione_tecnica, scheda_tecnica_path, tipo_prezzo, prezzo_unitario, ha_vetro, categorie(nome))`,
+          tipologia_apertura, larghezza_mm, altezza_mm, extra_colore_nome, extra_colore_percentuale,
+          prodotti(nome, descrizione_cliente, descrizione_tecnica, scheda_tecnica_path, tipo_prezzo, prezzo_unitario, ha_vetro, regola_prezzo, categorie(nome))`,
         )
         .eq("preventivo_id", preventivoId)
         .order("ordine", { ascending: true })
         .order("id", { ascending: true }),
       ensureServiziComplementari(supabase, preventivoId),
       caricaVersioniPreventivo(supabase, preventivoId),
+      caricaServiziCatalogo(supabase),
     ]);
 
     if (preventivoResult.error) throw new Error(preventivoResult.error.message);
@@ -1015,20 +1083,26 @@ export default function ComponiPreventivoPage() {
     let nettoOverrideLoad: number | null = null;
     if (preventivoResult.data.prezzo_netto_target != null) {
       const target = Number(preventivoResult.data.prezzo_netto_target);
-      prezzoNettoLoad = String(preventivoResult.data.prezzo_netto_target);
-      setPrezzoNetto(prezzoNettoLoad);
-      nettoOverrideLoad = Number.isFinite(target) ? round2(target) : null;
-      setNettoOverride(nettoOverrideLoad);
+      // 0 (o non positivo) non è un target valido: tipicamente campo vuoto
+      // persistito male, che azzererebbe i totali.
+      if (Number.isFinite(target) && target > 0) {
+        prezzoNettoLoad = String(preventivoResult.data.prezzo_netto_target);
+        setPrezzoNetto(prezzoNettoLoad);
+        nettoOverrideLoad = round2(target);
+        setNettoOverride(nettoOverrideLoad);
+      } else {
+        setPrezzoNetto("");
+        setNettoOverride(null);
+      }
     } else {
       setPrezzoNetto("");
       setNettoOverride(null);
     }
     setSnapTotali(
-      JSON.stringify({
+      serializzaSnapTotali({
         scontoPercentuale: sconto1Load,
         scontoPercentuale2: sconto2Load,
         ivaPercentuale: ivaLoad,
-        prezzoNetto: prezzoNettoLoad,
         nettoOverride: nettoOverrideLoad,
       }),
     );
@@ -1044,6 +1118,7 @@ export default function ComponiPreventivoPage() {
         ordine: servizio.ordine ?? 0,
       })),
     );
+    setServiziCatalogo(catalogoData);
   }, [preventivoId]);
 
   useEffect(() => {
@@ -1155,6 +1230,32 @@ export default function ComponiPreventivoPage() {
     [servizi],
   );
 
+  /** Standard non ancora presenti nel preventivo (match su descrizione). */
+  const serviziCatalogoDisponibili = useMemo(() => {
+    const usati = new Set(
+      servizi
+        .map((s) => normalizzaDescrizioneServizio(s.descrizione))
+        .filter(Boolean),
+    );
+    return serviziCatalogo.filter(
+      (s) => !usati.has(normalizzaDescrizioneServizio(s.descrizione)),
+    );
+  }, [servizi, serviziCatalogo]);
+
+  useEffect(() => {
+    if (!menuServiziAperto) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        menuServiziRef.current &&
+        !menuServiziRef.current.contains(event.target as Node)
+      ) {
+        setMenuServiziAperto(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [menuServiziAperto]);
+
   const totali = useMemo(
     () =>
       calcolaTotaliPreventivo({
@@ -1222,6 +1323,28 @@ export default function ComponiPreventivoPage() {
     );
     const display = round2(risultato.sconto1).toFixed(2);
     setScontoPercentuale((prev) => (prev === display ? prev : display));
+    // Ricalcolo derivato dal netto target: aggiorna lo snapshot così
+    // beforeunload non resta sporco senza modifiche utente.
+    setSnapTotali((prev) => {
+      if (prev == null) return prev;
+      try {
+        const parsed = JSON.parse(prev) as {
+          scontoPercentuale: string;
+          scontoPercentuale2: string;
+          ivaPercentuale: number;
+          nettoOverride: number | null;
+        };
+        const next = serializzaSnapTotali({
+          ...parsed,
+          scontoPercentuale: display,
+          nettoOverride,
+        });
+        snapTotaliRef.current = next;
+        return next;
+      } catch {
+        return prev;
+      }
+    });
   }, [nettoOverride, importoTotale, scontoNum2]);
 
   useEffect(() => {
@@ -1235,8 +1358,8 @@ export default function ComponiPreventivoPage() {
   ]);
 
   function applicaNettoTarget(raw: string) {
-    if (raw.trim() === "") {
-      // Campo svuotato → sconti di default 10% + 0%
+    if (raw.trim() === "" || Number(raw.replace(",", ".")) === 0) {
+      // Campo svuotato / 0 → sconti di default 10% + 0%, nessun override
       setNettoNonRaggiungibile(false);
       setNettoOverride(null);
       setSconto1Preciso(null);
@@ -1459,7 +1582,8 @@ export default function ComponiPreventivoPage() {
         .from("preventivi")
         .select(
           `finanziamento_attivo, finanziamento_anticipo, finanziamento_durate_mostrate,
-          fin_famiglia, fin_durata_scelta, detrazione_perc`,
+          fin_famiglia, fin_durata_scelta, fin_pdf_solo_scelta, fin_assorbi_maggiorazione,
+          detrazione_perc`,
         )
         .eq("id", preventivoId)
         .single(),
@@ -1491,6 +1615,20 @@ export default function ComponiPreventivoPage() {
         let convenzioni: ReturnType<typeof mapConvenzioneRow>[] = [];
 
         if (finanziamentoAttivo) {
+          const durateRef =
+            parsed.soloScelta && parsed.durataScelta != null
+              ? [parsed.durataScelta]
+              : parsed.durateMostrate;
+          if (parsed.soloScelta && parsed.durataScelta == null) {
+            throw new Error(
+              "Seleziona un'opzione di pagamento per continuare",
+            );
+          }
+          if (!parsed.soloScelta && durateRef.length === 0) {
+            throw new Error(
+              "Mostra almeno una durata al cliente per il PDF",
+            );
+          }
           if (configResult.error) {
             throw new Error(
               `Finanziamento attivo ma config non leggibile: ${configResult.error.message}`,
@@ -1507,14 +1645,10 @@ export default function ComponiPreventivoPage() {
           );
         }
 
-        finanziamento = {
-          detrazionePerc,
-          finanziamentoAttivo,
-          totaleIvato: totali.totaleIvato,
-          imponibile: totaleFinale,
-          famiglia: parsed.famiglia,
-          durateMostrate:
-            parsed.durateMostrate.length > 0
+        const durateMostratePdf =
+          parsed.soloScelta && parsed.durataScelta != null
+            ? [parsed.durataScelta]
+            : parsed.durateMostrate.length > 0
               ? parsed.durateMostrate
               : config
                 ? defaultDurateMostrate(
@@ -1523,9 +1657,21 @@ export default function ComponiPreventivoPage() {
                     config.soglia_tasso_zero_gratis,
                     parsed.famiglia,
                   )
-                : [],
+                : [];
+
+        finanziamento = {
+          detrazionePerc,
+          finanziamentoAttivo,
+          totaleIvato: totali.totaleIvato,
+          imponibile: totaleFinale,
+          famiglia: parsed.famiglia,
+          durateMostrate: durateMostratePdf,
           anticipoScelta: parsed.anticipoScelta,
-          durataScelta: parsed.durataScelta,
+          durataScelta:
+            parsed.durataScelta ??
+            (!parsed.soloScelta ? durateMostratePdf[0] ?? null : null),
+          soloScelta: parsed.soloScelta,
+          assorbiMaggiorazione: parsed.assorbiMaggiorazione,
           config,
           convenzioni,
         };
@@ -2064,7 +2210,6 @@ export default function ComponiPreventivoPage() {
 
   async function persistTotali() {
     const t = totaliFormRef.current;
-    const nettoTarget = Number(t.prezzoNetto.replace(",", "."));
     const supabase = createSupabaseClient();
     const { error: updateError } = await supabase
       .from("preventivi")
@@ -2072,22 +2217,21 @@ export default function ComponiPreventivoPage() {
         sconto_percentuale: t.scontoNum,
         sconto_percentuale_2: t.scontoNum2,
         iva_percentuale: t.ivaPercentuale,
+        // Solo se l'utente ha fissato esplicitamente un netto target.
+        // Non salvare il valore calcolato/vuoto (Number("") === 0) come target.
         prezzo_netto_target:
-          t.nettoOverride != null
+          t.nettoOverride != null && t.nettoOverride > 0
             ? round2(t.nettoOverride)
-            : Number.isFinite(nettoTarget)
-              ? round2(nettoTarget)
-              : round2(t.nettoProdotti),
+            : null,
       })
       .eq("id", preventivoId);
 
     if (updateError) throw new Error(updateError.message);
 
-    const snap = JSON.stringify({
+    const snap = serializzaSnapTotali({
       scontoPercentuale: t.scontoPercentuale,
       scontoPercentuale2: t.scontoPercentuale2,
       ivaPercentuale: t.ivaPercentuale,
-      prezzoNetto: t.prezzoNetto,
       nettoOverride: t.nettoOverride,
     });
     snapTotaliRef.current = snap;
@@ -2097,11 +2241,10 @@ export default function ComponiPreventivoPage() {
 
   function triggerAutosaveTotali() {
     const t = totaliFormRef.current;
-    const corrente = JSON.stringify({
+    const corrente = serializzaSnapTotali({
       scontoPercentuale: t.scontoPercentuale,
       scontoPercentuale2: t.scontoPercentuale2,
       ivaPercentuale: t.ivaPercentuale,
-      prezzoNetto: t.prezzoNetto,
       nettoOverride: t.nettoOverride,
     });
     if (snapTotaliRef.current != null && corrente === snapTotaliRef.current) {
@@ -2232,6 +2375,12 @@ export default function ComponiPreventivoPage() {
         colore_esterno: "",
         colore_ferramenta: "",
         vetro: "",
+        tipologia_apertura: "",
+        larghezza_mm: null,
+        altezza_mm: null,
+        extra_colore_nome: "",
+        extra_colore_percentuale: null,
+        nota_griglia: "",
         tipo_riga: "prodotto",
         testo_libero: "",
         visibile_pdf: data.visibile_pdf ?? true,
@@ -2299,6 +2448,12 @@ export default function ComponiPreventivoPage() {
         colore_esterno: "",
         colore_ferramenta: "",
         vetro: "",
+        tipologia_apertura: "",
+        larghezza_mm: null,
+        altezza_mm: null,
+        extra_colore_nome: "",
+        extra_colore_percentuale: null,
+        nota_griglia: "",
         tipo_riga: "testo",
         testo_libero: data.testo_libero ?? "— FORNITURA E POSA —",
         visibile_pdf: data.visibile_pdf ?? true,
@@ -2310,7 +2465,10 @@ export default function ComponiPreventivoPage() {
     setAddingTesto(false);
   }
 
-  async function handleAggiungiServizio() {
+  async function handleAggiungiServizio(template?: ServizioCatalogo | null) {
+    if (addingServizio) return;
+    setAddingServizio(true);
+    setMenuServiziAperto(false);
     setError(null);
 
     const supabase = createSupabaseClient();
@@ -2323,9 +2481,9 @@ export default function ComponiPreventivoPage() {
       .from("servizi_complementari")
       .insert({
         preventivo_id: Number(preventivoId),
-        descrizione: "",
-        nota: "",
-        importo: 0,
+        descrizione: template?.descrizione?.trim() || "",
+        nota: template?.nota ?? "",
+        importo: template?.importo ?? 0,
         ordine: prossimoOrdine,
       })
       .select("id, descrizione, nota, importo, ordine")
@@ -2333,6 +2491,7 @@ export default function ComponiPreventivoPage() {
 
     if (insertError || !data) {
       setError(insertError?.message ?? "Errore nell'aggiunta del servizio");
+      setAddingServizio(false);
       return;
     }
 
@@ -2346,6 +2505,7 @@ export default function ComponiPreventivoPage() {
         ordine: data.ordine ?? prossimoOrdine,
       },
     ]);
+    setAddingServizio(false);
   }
 
   async function handleEliminaServizio(servizioId: number) {
@@ -2385,7 +2545,9 @@ export default function ComponiPreventivoPage() {
           colore_interno, colore_esterno, colore_ferramenta, vetro, prezzo_libero,
           prezzo_inserito, regola_applicata, posa_importo, posa_tipo, posa_manuale,
           posa_riga_separata, modalita_mq, mq_diretti, riferimento_interno, ordine,
-          visibile_pdf, tipo_riga, testo_libero, righe_flag(flag_id)`,
+          visibile_pdf, tipo_riga, testo_libero,
+          tipologia_apertura, larghezza_mm, altezza_mm, extra_colore_nome, extra_colore_percentuale,
+          righe_flag(flag_id)`,
         )
         .in("id", riga.righeIds);
       if (fetchError) throw new Error(fetchError.message);
@@ -2416,6 +2578,11 @@ export default function ComponiPreventivoPage() {
         colore_esterno: orig.colore_esterno,
         colore_ferramenta: orig.colore_ferramenta,
         vetro: orig.vetro,
+        tipologia_apertura: orig.tipologia_apertura,
+        larghezza_mm: orig.larghezza_mm,
+        altezza_mm: orig.altezza_mm,
+        extra_colore_nome: orig.extra_colore_nome,
+        extra_colore_percentuale: orig.extra_colore_percentuale,
         prezzo_libero: orig.prezzo_libero,
         prezzo_inserito: orig.prezzo_inserito,
         regola_applicata: orig.regola_applicata,
@@ -2532,11 +2699,10 @@ export default function ComponiPreventivoPage() {
   });
   const testataDirty = snapTestata != null && testataCorrente !== snapTestata;
   const noteDirty = snapNote != null && notePreventivo !== snapNote;
-  const totaliCorrente = JSON.stringify({
+  const totaliCorrente = serializzaSnapTotali({
     scontoPercentuale,
     scontoPercentuale2,
     ivaPercentuale,
-    prezzoNetto,
     nettoOverride,
   });
   const totaliDirty = snapTotali != null && totaliCorrente !== snapTotali;
@@ -2601,15 +2767,14 @@ export default function ComponiPreventivoPage() {
     }
 
     const t = totaliFormRef.current;
-    const totaliCorrenteNow = JSON.stringify({
+    const totaliCorrenteNow = serializzaSnapTotali({
       scontoPercentuale: t.scontoPercentuale,
       scontoPercentuale2: t.scontoPercentuale2,
       ivaPercentuale: t.ivaPercentuale,
-      prezzoNetto: t.prezzoNetto,
       nettoOverride: t.nettoOverride,
     });
     const totaliDirtyNow =
-      snapTotaliRef.current == null ||
+      snapTotaliRef.current != null &&
       totaliCorrenteNow !== snapTotaliRef.current;
     if (totaliDirtyNow) {
       await totaliAutosave.run(async () => {
@@ -2742,7 +2907,7 @@ export default function ComponiPreventivoPage() {
             Componi preventivo cliente
           </p>
           <h1 className="mt-1 text-2xl font-semibold text-brand-navy sm:text-3xl">
-            {preventivo?.riferimento}
+            {titoloPreventivo(clienteNome || preventivo?.cliente_nome, preventivo?.riferimento)}
           </h1>
 
           <div className="mt-4 flex items-center justify-end">
@@ -2974,24 +3139,24 @@ export default function ComponiPreventivoPage() {
             </p>
           ) : (
             <div className="overflow-x-auto rounded-md border border-zinc-200">
-              <table className="w-full min-w-[780px] text-left text-sm">
+              <table className="w-full min-w-[860px] table-fixed text-left text-sm">
                 <thead className="bg-brand-navy text-white">
                   <tr>
                     <th className="w-12 px-2 py-2.5 font-medium">↕</th>
-                    <th className="w-16 px-3 py-2.5 font-medium">Q.tà</th>
+                    <th className="w-14 px-2 py-2.5 font-medium">Q.tà</th>
                     <th className="px-3 py-2.5 font-medium">
                       Descrizione commerciale
                     </th>
-                    <th className="w-56 px-3 py-2.5 font-medium">
+                    <th className="w-44 px-3 py-2.5 font-medium">
                       Note/Caratteristiche
                     </th>
-                    <th className="w-32 px-3 py-2.5 text-right font-medium">
+                    <th className="w-28 px-3 py-2.5 text-right font-medium">
                       Importo
                     </th>
-                    <th className="w-24 px-3 py-2.5 text-center font-medium">
+                    <th className="w-20 px-2 py-2.5 text-center font-medium">
                       Visibile
                     </th>
-                    <th className="w-28 px-2 py-2.5 font-medium">Azioni</th>
+                    <th className="w-24 px-2 py-2.5 font-medium">Azioni</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3204,13 +3369,53 @@ export default function ComponiPreventivoPage() {
                 status={serviziAutosave.status}
                 onRetry={serviziAutosave.retry}
               />
-              <button
-                type="button"
-                onClick={handleAggiungiServizio}
-                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50"
-              >
-                Aggiungi servizio
-              </button>
+              <div ref={menuServiziRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMenuServiziAperto((open) => !open)}
+                  disabled={addingServizio}
+                  aria-expanded={menuServiziAperto}
+                  aria-haspopup="menu"
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  {addingServizio ? "Aggiunta..." : "Aggiungi servizio"}
+                </button>
+                {menuServiziAperto && (
+                  <ul
+                    role="menu"
+                    className="absolute right-0 z-30 mt-1 min-w-[16rem] max-w-[22rem] overflow-hidden rounded-md border border-zinc-200 bg-white py-1 shadow-lg"
+                  >
+                    {serviziCatalogoDisponibili.length === 0 ? (
+                      <li className="px-3 py-2 text-xs text-zinc-500">
+                        Tutti i servizi standard sono già in elenco.
+                      </li>
+                    ) : (
+                      serviziCatalogoDisponibili.map((template) => (
+                        <li key={`${template.ordine}-${template.descrizione}`} role="none">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => void handleAggiungiServizio(template)}
+                            className="block w-full px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-50"
+                          >
+                            {template.descrizione}
+                          </button>
+                        </li>
+                      ))
+                    )}
+                    <li role="none" className="mt-1 border-t border-zinc-100">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => void handleAggiungiServizio(null)}
+                        className="block w-full px-3 py-2 text-left text-sm font-medium text-brand-navy hover:bg-zinc-50"
+                      >
+                        Personalizzato
+                      </button>
+                    </li>
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
 
@@ -3378,9 +3583,6 @@ export default function ComponiPreventivoPage() {
                     setIvaPercentuale(aliquota);
                     void totaliAutosave
                       .run(async () => {
-                        const nettoTarget = Number(
-                          prezzoNetto.replace(",", "."),
-                        );
                         const supabase = createSupabaseClient();
                         const { error: updateError } = await supabase
                           .from("preventivi")
@@ -3389,20 +3591,17 @@ export default function ComponiPreventivoPage() {
                             sconto_percentuale_2: scontoNum2,
                             iva_percentuale: aliquota,
                             prezzo_netto_target:
-                              nettoOverride != null
+                              nettoOverride != null && nettoOverride > 0
                                 ? round2(nettoOverride)
-                                : Number.isFinite(nettoTarget)
-                                  ? round2(nettoTarget)
-                                  : round2(totali.nettoProdotti),
+                                : null,
                           })
                           .eq("id", preventivoId);
                         if (updateError) throw new Error(updateError.message);
                         setSnapTotali(
-                          JSON.stringify({
+                          serializzaSnapTotali({
                             scontoPercentuale,
                             scontoPercentuale2,
                             ivaPercentuale: aliquota,
-                            prezzoNetto,
                             nettoOverride,
                           }),
                         );

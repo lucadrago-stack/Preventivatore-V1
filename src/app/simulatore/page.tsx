@@ -47,6 +47,7 @@ export default function SimulatorePage() {
   const [famiglia, setFamiglia] = useState<FamigliaAlternativa>(
     DEFAULT_FAMIGLIA_ALTERNATIVA,
   );
+  const [assorbiMaggiorazione, setAssorbiMaggiorazione] = useState(false);
   const [anticipiRaw, setAnticipiRaw] = useState<Record<number, string>>({});
   const [defaultsAnticipoPronti, setDefaultsAnticipoPronti] = useState(false);
 
@@ -97,7 +98,7 @@ export default function SimulatorePage() {
     void loadConfig();
   }, [loadConfig]);
 
-  // Anticipi default quando cambiano base/config
+  // Anticipi default quando cambiano base/config (non al toggle assorbi: resta l'anticipo digitato)
   useEffect(() => {
     if (!config || convenzioni.length === 0) return;
     const defaults = mappaAnticipiDefault(baseIvato, convenzioni, config);
@@ -119,12 +120,17 @@ export default function SimulatorePage() {
       for (const c of convenzioni) {
         if (!c.attivo) continue;
         if (out[c.id] === undefined) {
-          out[c.id] = anticipoDefaultPerConvenzione(baseIvato, c, config);
+          out[c.id] = anticipoDefaultPerConvenzione(
+            baseIvato,
+            c,
+            config,
+            assorbiMaggiorazione,
+          );
         }
       }
     }
     return out;
-  }, [anticipiRaw, baseIvato, config, convenzioni]);
+  }, [anticipiRaw, assorbiMaggiorazione, baseIvato, config, convenzioni]);
 
   const simulazioni = useMemo(() => {
     if (!config || !defaultsAnticipoPronti) return [] as SimulazioneConvenzione[];
@@ -134,9 +140,11 @@ export default function SimulatorePage() {
       convenzioni,
       config,
       famigliaAlternativa: famiglia,
+      assorbiMaggiorazione,
     });
   }, [
     anticipiPerId,
+    assorbiMaggiorazione,
     baseIvato,
     config,
     convenzioni,
@@ -344,7 +352,7 @@ export default function SimulatorePage() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <div className="col-span-2 rounded-md border-2 border-brand-navy bg-white px-3 py-2 sm:col-span-1">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-navy">
-                    Importo contrattuale
+                    Importo contratto
                   </p>
                   <p className="text-lg font-bold tabular-nums text-brand-navy">
                     {formatEuro(sim.importoFatturato)}
@@ -352,8 +360,29 @@ export default function SimulatorePage() {
                   <p className="text-[10px] text-brand-muted">
                     {sim.maggiorazioneApplicata
                       ? `+${config.maggiorazione_perc}% maggiorazione`
-                      : "senza maggiorazione"}
+                      : assorbiMaggiorazione && !sim.doppioPiano
+                        ? "senza maggiorazione · assorbita"
+                        : "senza maggiorazione"}
                   </p>
+                  {!sim.doppioPiano && (
+                    <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-brand-text">
+                      <input
+                        type="checkbox"
+                        checked={assorbiMaggiorazione}
+                        onChange={(e) =>
+                          setAssorbiMaggiorazione(e.target.checked)
+                        }
+                        className="h-3.5 w-3.5"
+                      />
+                      <span>
+                        Assorbi +{config.maggiorazione_perc}%
+                        <span className="text-brand-muted">
+                          {" "}
+                          (a carico BDS)
+                        </span>
+                      </span>
+                    </label>
+                  )}
                 </div>
                 <div>
                   <label className="text-[10px] uppercase tracking-wide text-brand-muted">

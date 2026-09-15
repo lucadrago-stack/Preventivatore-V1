@@ -99,7 +99,7 @@ export function useAutosaveController() {
 
 /**
  * Intercetta i click sui link interni: completa il flush prima di navigare.
- * - `isDirty`: avviso beforeunload / pagehide
+ * - `isDirty`: avviso beforeunload (solo se c'è davvero qualcosa da salvare)
  * - `alwaysFlushOnNavigate`: se true, salva sempre prima di ogni link interno
  *   (utile in componi per evitare race sull'ultimo keystroke)
  */
@@ -129,7 +129,10 @@ export function useFlushBeforeNavigate(options: {
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!isDirtyRef.current && !isSavingRef.current) return;
+      // Solo modifiche non ancora salvate. Non usare isSaving: dopo un
+      // autosave riuscito lo stato può ancora essere "saving"/"saved" e
+      // genererebbe falsi positivi al refresh.
+      if (!isDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = "";
     };

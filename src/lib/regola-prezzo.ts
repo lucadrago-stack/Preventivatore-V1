@@ -132,6 +132,29 @@ export function spiegazioneRegolaPrezzo(
   return `Prezzo BDS ${formatEuroBrief(bds)} (nessuna trasformazione)`;
 }
 
+/**
+ * Stesso schema di sconto_listino, etichetta "Prezzo da griglia".
+ * listino = interpolazione (+ extra colore); BDS = listino × (1 − sconto%/100).
+ */
+export function spiegazionePrezzoGriglia(
+  prezzoListinoGriglia: number,
+  scontoPerc: number | null | undefined,
+): string | null {
+  if (!Number.isFinite(prezzoListinoGriglia) || prezzoListinoGriglia <= 0) {
+    return null;
+  }
+  const sconto = Number(scontoPerc ?? 0);
+  const bds = applicaRegolaPrezzo(
+    prezzoListinoGriglia,
+    "sconto_listino",
+    sconto,
+  );
+  if (Number.isFinite(sconto) && sconto > 0) {
+    return `Prezzo da griglia ${formatEuroBrief(prezzoListinoGriglia)} − ${sconto}% = ${formatEuroBrief(bds)} Prezzo BDS`;
+  }
+  return `Prezzo da griglia ${formatEuroBrief(prezzoListinoGriglia)} = ${formatEuroBrief(bds)} Prezzo BDS`;
+}
+
 /** Serializza la regola effettivamente usata sulla riga (tracciabilità). */
 export function serializzaRegolaApplicata(
   regola: RegolaPrezzo,

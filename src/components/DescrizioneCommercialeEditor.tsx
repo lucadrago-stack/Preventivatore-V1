@@ -2,10 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import {
-  isDescrizioneCentrata,
   normalizeDescrizioneToHtml,
   sanitizeDescrizioneHtml,
-  toggleDescrizioneCentrata,
 } from "@/lib/descrizione-formattata";
 
 type Props = {
@@ -18,8 +16,8 @@ type Props = {
 };
 
 /**
- * Editor WYSIWYG minimale: solo Rosso + Centra, a capo liberi.
- * Salva HTML minimale in descrizione_cliente.
+ * Editor WYSIWYG minimale: solo Rosso, a capo liberi.
+ * Allineamento sempre a sinistra (niente Centra).
  */
 export default function DescrizioneCommercialeEditor({
   value,
@@ -31,15 +29,19 @@ export default function DescrizioneCommercialeEditor({
   const focusedRef = useRef(false);
 
   const htmlValue = normalizeDescrizioneToHtml(value);
-  const centrata = isDescrizioneCentrata(htmlValue);
 
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return;
     if (focusedRef.current) return;
     const current = sanitizeDescrizioneHtml(el.innerHTML);
-    if (current === htmlValue) return;
+    if (current === htmlValue) {
+      // Anche se il testo coincide, togli eventuali text-align residui nel DOM.
+      stripAlignCenterInPlace(el);
+      return;
+    }
     el.innerHTML = htmlValue || "";
+    stripAlignCenterInPlace(el);
   }, [htmlValue]);
 
   function emitSanitized(rewriteDom: boolean) {
@@ -48,6 +50,7 @@ export default function DescrizioneCommercialeEditor({
     const cleaned = sanitizeDescrizioneHtml(el.innerHTML);
     if (rewriteDom && el.innerHTML !== cleaned) {
       el.innerHTML = cleaned || "";
+      stripAlignCenterInPlace(el);
     }
     onChange(cleaned);
   }
@@ -59,20 +62,6 @@ export default function DescrizioneCommercialeEditor({
     document.execCommand("styleWithCSS", false, "true");
     document.execCommand("foreColor", false, "red");
     emitSanitized(true);
-  }
-
-  function applicaCentra() {
-    const base = editorRef.current
-      ? sanitizeDescrizioneHtml(editorRef.current.innerHTML)
-      : htmlValue;
-    const next = toggleDescrizioneCentrata(base);
-    onChange(next);
-    requestAnimationFrame(() => {
-      const el = editorRef.current;
-      if (!el) return;
-      el.innerHTML = next || "";
-      el.focus();
-    });
   }
 
   return (
@@ -87,19 +76,6 @@ export default function DescrizioneCommercialeEditor({
         >
           Rosso
         </button>
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={applicaCentra}
-          className={`rounded border px-2 py-0.5 text-xs font-medium hover:bg-zinc-100 ${
-            centrata
-              ? "border-zinc-400 bg-zinc-200 text-zinc-900"
-              : "border-zinc-300 bg-white text-zinc-700"
-          }`}
-          title="Centra il testo nella cella PDF"
-        >
-          Centra
-        </button>
       </div>
       <div
         ref={editorRef}
@@ -110,6 +86,16 @@ export default function DescrizioneCommercialeEditor({
         data-descrizione-editor={rigaKey ?? "1"}
         onFocus={() => {
           focusedRef.current = true;
+        }}
+        onPaste={(e) => {
+          e.preventDefault();
+          const clipboard = e.clipboardData;
+          const html = clipboard.getData("text/html");
+          const plain = clipboard.getData("text/plain");
+          const source = html?.trim() ? html : plain;
+          const cleaned = sanitizeDescrizioneHtml(source);
+          document.execCommand("insertHTML", false, cleaned || plain);
+          emitSanitized(true);
         }}
         onBlur={() => {
           focusedRef.current = false;
@@ -122,6 +108,7 @@ export default function DescrizioneCommercialeEditor({
           if (el.innerHTML !== cleaned) {
             el.innerHTML = cleaned || "";
           }
+          stripAlignCenterInPlace(el);
           onChange(cleaned);
           onBlurSave?.(cleaned);
         }}
@@ -130,15 +117,25 @@ export default function DescrizioneCommercialeEditor({
           if (!el) return;
           onChange(el.innerHTML);
         }}
-        className={`min-h-[8.5rem] w-full rounded border border-zinc-300 px-2 py-1 text-sm outline-none focus:border-zinc-500 [&_span]:font-semibold ${
-          centrata ? "text-center" : "text-left"
-        }`}
-        style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+        className="min-h-[8.5rem] w-full rounded border border-zinc-300 px-2 py-1 text-left text-sm outline-none focus:border-zinc-500 [&_*]:text-left [&_span]:font-semibold"
+        style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "left" }}
       />
       <p className="text-[11px] leading-snug text-zinc-400">
-        Selezione + Rosso colora subito il testo. Centra allinea la cella nel
+        Selezione + Rosso colora il testo. Testo sempre allineato a sinistra nel
         PDF. A capo liberi.
       </p>
     </div>
   );
+}
+
+function stripAlignCenterInPlace(root: HTMLElement) {
+  root.style.textAlign = "left";
+  root.querySelectorAll<HTMLElement>("*").forEach((node) => {
+    if (node.style?.textAlign) {
+      node.style.textAlign = "left";
+    }
+    if (node.getAttribute("align") === "center") {
+      node.removeAttribute("align");
+    }
+  });
 }

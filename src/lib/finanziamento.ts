@@ -251,6 +251,8 @@ export function simulaConvenzione(params: {
   anticipo: number;
   convenzione: ConvenzioneFinanziamento;
   config: ConfigFinanziamento;
+  /** Se true, non applica la maggiorazione (contratto = base IVATO). */
+  assorbiMaggiorazione?: boolean;
 }): SimulazioneConvenzione {
   const { convenzione } = params;
   if (convenzione.doppio_piano || convenzione.famiglia === "doppio_piano") {
@@ -260,12 +262,14 @@ export function simulaConvenzione(params: {
   const { baseIvato, config } = params;
   const anticipo = Math.max(0, Number(params.anticipo) || 0);
 
-  const { importoFatturato, applicata } = applicaMaggiorazione(
-    baseIvato,
-    convenzione.regola_maggiorazione,
-    config.maggiorazione_perc,
-    config.soglia_tasso_zero_gratis,
-  );
+  const { importoFatturato, applicata } = params.assorbiMaggiorazione
+    ? { importoFatturato: round2(Math.max(0, baseIvato)), applicata: false }
+    : applicaMaggiorazione(
+        baseIvato,
+        convenzione.regola_maggiorazione,
+        config.maggiorazione_perc,
+        config.soglia_tasso_zero_gratis,
+      );
   const maggiorazioneImporto = round2(importoFatturato - baseIvato);
 
   let anticipoMinimo = 0;
@@ -350,6 +354,8 @@ export function simulaTutteLeConvenzioni(params: {
   convenzioni: ConvenzioneFinanziamento[];
   config: ConfigFinanziamento;
   famigliaAlternativa?: FamigliaAlternativa;
+  /** Se true, nessuna maggiorazione sul contratto. */
+  assorbiMaggiorazione?: boolean;
 }): SimulazioneConvenzione[] {
   const lista = params.famigliaAlternativa
     ? filtraConvenzioniPerFamiglia(
@@ -369,6 +375,7 @@ export function simulaTutteLeConvenzioni(params: {
         anticipo,
         convenzione,
         config: params.config,
+        assorbiMaggiorazione: params.assorbiMaggiorazione,
       });
     });
 }
@@ -382,16 +389,19 @@ export function anticipoDefaultPerConvenzione(
   baseIvato: number,
   convenzione: ConvenzioneFinanziamento,
   config: ConfigFinanziamento,
+  assorbiMaggiorazione = false,
 ): number {
   if (convenzione.doppio_piano || convenzione.famiglia === "doppio_piano") {
     return 0;
   }
-  const { importoFatturato } = applicaMaggiorazione(
-    baseIvato,
-    convenzione.regola_maggiorazione,
-    config.maggiorazione_perc,
-    config.soglia_tasso_zero_gratis,
-  );
+  const { importoFatturato } = assorbiMaggiorazione
+    ? { importoFatturato: round2(Math.max(0, baseIvato)) }
+    : applicaMaggiorazione(
+        baseIvato,
+        convenzione.regola_maggiorazione,
+        config.maggiorazione_perc,
+        config.soglia_tasso_zero_gratis,
+      );
   if (convenzione.tipo === "tasso_zero" || convenzione.famiglia === "base") {
     const limite = config.limite_finanziabile_20mesi;
     if (importoFatturato > limite) {
@@ -406,11 +416,17 @@ export function mappaAnticipiDefault(
   baseIvato: number,
   convenzioni: ConvenzioneFinanziamento[],
   config: ConfigFinanziamento,
+  assorbiMaggiorazione = false,
 ): Record<number, number> {
   const out: Record<number, number> = {};
   for (const c of convenzioni) {
     if (!c.attivo) continue;
-    out[c.id] = anticipoDefaultPerConvenzione(baseIvato, c, config);
+    out[c.id] = anticipoDefaultPerConvenzione(
+      baseIvato,
+      c,
+      config,
+      assorbiMaggiorazione,
+    );
   }
   return out;
 }

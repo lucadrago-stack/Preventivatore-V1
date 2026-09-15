@@ -1,4 +1,5 @@
-export const DICITURA_POSA_CERTIFICATA_INCLUSA = "posa certificata inclusa";
+export const DICITURA_POSA_CERTIFICATA_INCLUSA =
+  "Posa certificata Posaclima inclusa";
 export const DICITURA_ANTA_RIBALTA_MICROCIRCOLO =
   "Anta a ribalta e microcircolo incluso";
 
@@ -16,6 +17,7 @@ export type OpzioniNotaAutomatica = {
 /**
  * Righe automatiche per la colonna NOTE (PDF e anteprima Componi).
  * Non sovrascrivono la nota scritta a mano.
+ * Griglia: niente tipologie/misure/extra in nota (solo colore/vetro/posa come gli altri infissi).
  */
 export function righeAutomaticheNota(opts: OpzioniNotaAutomatica): string[] {
   const parti: string[] = [];

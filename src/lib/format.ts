@@ -11,6 +11,20 @@ export function formatEuro(value: number): string {
 }
 
 /**
+ * Titolo UI preventivo: "Cliente - Riferimento" (come in home).
+ * Se manca il cliente, resta solo il riferimento.
+ */
+export function titoloPreventivo(
+  clienteNome: string | null | undefined,
+  riferimento: string | null | undefined,
+): string {
+  const rif = (riferimento ?? "").trim();
+  const cliente = (clienteNome ?? "").trim();
+  if (cliente && rif) return `${cliente} - ${rif}`;
+  return rif || cliente || "Preventivo";
+}
+
+/**
  * Normalizza il risultato di una relazione Supabase:
  * può arrivare come singolo oggetto, array con un elemento, o null.
  */
@@ -32,6 +46,15 @@ export function formatData(iso: string): string {
 export function formatDataPerInput(data: string | null): string {
   if (!data) return "";
   return data.slice(0, 10);
+}
+
+/** Data di oggi in formato <input type="date"> ("2026-09-14"). */
+export function dataOggiPerInput(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 /** Formatta data+ora come "03/09/2026 14:30". Usata per allegati e versioni. */

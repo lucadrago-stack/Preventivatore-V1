@@ -1,8 +1,14 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 let browserClient: SupabaseClient | null = null;
 
-function creaClient() {
+/**
+ * Client Supabase per componenti client-side.
+ * Usa cookie (via @supabase/ssr) così middleware e Server Components
+ * vedono la stessa sessione.
+ */
+export function createSupabaseClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -10,15 +16,13 @@ function creaClient() {
     throw new Error("Variabili Supabase mancanti in .env.local");
   }
 
-  return createClient(url, key);
-}
-
-export function createSupabaseClient() {
   if (typeof window === "undefined") {
-    return creaClient();
+    // Evita singleton sul server: ogni chiamata è indipendente.
+    return createBrowserClient(url, key);
   }
+
   if (!browserClient) {
-    browserClient = creaClient();
+    browserClient = createBrowserClient(url, key);
   }
   return browserClient;
 }

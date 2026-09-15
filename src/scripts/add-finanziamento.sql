@@ -39,7 +39,7 @@ where not exists (select 1 from convenzioni_finanziamento limit 1);
 
 -- Colonne sul preventivo per salvare simulazione e scelta
 alter table preventivi
-  add column if not exists finanziamento_attivo boolean default false;
+  add column if not exists finanziamento_attivo boolean default true;
 
 alter table preventivi
   add column if not exists finanziamento_anticipo numeric default 0;

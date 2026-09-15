@@ -1,4 +1,5 @@
 import { isProdottoPrezzoDigitato } from "@/lib/calcolo-prezzo";
+import { notaGrigliaPosizioniAggregate } from "@/lib/griglia-prezzo";
 import { isCategoriaPosaAvanzata } from "@/lib/posa-categorie";
 import { normalizzaRelazione } from "@/lib/format";
 
@@ -18,6 +19,11 @@ export type RigaDbPerAggregazione = {
   colore_esterno: string | null;
   colore_ferramenta: string | null;
   vetro: string | null;
+  tipologia_apertura?: string | null;
+  larghezza_mm?: number | null;
+  altezza_mm?: number | null;
+  extra_colore_nome?: string | null;
+  extra_colore_percentuale?: number | null;
   prodotto_id: number | null;
   ordine: number | null;
   visibile_pdf: boolean | null;
@@ -32,6 +38,7 @@ export type RigaDbPerAggregazione = {
         tipo_prezzo: string | null;
         prezzo_unitario: number | null;
         ha_vetro?: boolean | null;
+        regola_prezzo?: string | null;
         categorie: { nome: string } | { nome: string }[] | null;
       }
     | {
@@ -42,6 +49,7 @@ export type RigaDbPerAggregazione = {
         tipo_prezzo: string | null;
         prezzo_unitario: number | null;
         ha_vetro?: boolean | null;
+        regola_prezzo?: string | null;
         categorie: { nome: string } | { nome: string }[] | null;
       }[]
     | null;
@@ -66,6 +74,13 @@ export type RigaAggregataComponi = {
   colore_esterno: string;
   colore_ferramenta: string;
   vetro: string;
+  tipologia_apertura: string;
+  larghezza_mm: number | null;
+  altezza_mm: number | null;
+  extra_colore_nome: string;
+  extra_colore_percentuale: number | null;
+  /** Note griglia multi-posizione (tipologia/mm per riga, extra una volta). */
+  nota_griglia: string;
   tipo_riga: "prodotto" | "testo" | "posa";
   testo_libero: string;
   visibile_pdf: boolean;
@@ -143,9 +158,72 @@ function vetroDaRiga(riga: RigaDbPerAggregazione): string {
   return (riga.vetro ?? "").trim();
 }
 
+function notaGrigliaDaRiga(riga: RigaDbPerAggregazione): string {
+  return (
+    notaGrigliaPosizioniAggregate(
+      [
+        {
+          tipologiaApertura: riga.tipologia_apertura,
+          larghezzaMm: riga.larghezza_mm,
+          altezzaMm: riga.altezza_mm,
+          quantita: riga.quantita,
+        },
+      ],
+      riga.extra_colore_nome,
+      riga.extra_colore_percentuale,
+    ) ?? ""
+  );
+}
+
+function appendNotaGrigliaPosizione(
+  esistente: string,
+  riga: RigaDbPerAggregazione,
+): string {
+  const misura =
+    notaGrigliaPosizioniAggregate(
+      [
+        {
+          tipologiaApertura: riga.tipologia_apertura,
+          larghezzaMm: riga.larghezza_mm,
+          altezzaMm: riga.altezza_mm,
+          quantita: riga.quantita,
+        },
+      ],
+      null,
+      null,
+    ) ?? "";
+  if (!misura) return esistente;
+  if (!esistente.trim()) {
+    return (
+      notaGrigliaPosizioniAggregate(
+        [
+          {
+            tipologiaApertura: riga.tipologia_apertura,
+            larghezzaMm: riga.larghezza_mm,
+            altezzaMm: riga.altezza_mm,
+            quantita: riga.quantita,
+          },
+        ],
+        riga.extra_colore_nome,
+        riga.extra_colore_percentuale,
+      ) ?? misura
+    );
+  }
+  // Inserisci la nuova misura prima dell'eventuale riga extra colore in coda
+  const linee = esistente.split("\n").filter(Boolean);
+  const extraLine =
+    linee.length > 0 && !linee[linee.length - 1].includes("×")
+      ? linee.pop()
+      : null;
+  linee.push(misura);
+  if (extraLine) linee.push(extraLine);
+  return linee.join("\n");
+}
+
 /**
  * Solo pezzo con listino a 0 (prezzo digitato).
- * mq/ml e pezzo a listino si aggregano. Se manca tipo_prezzo → aggregabile
+ * mq/ml, pezzo a listino e griglia multi-posizione si aggregano.
+ * Se manca tipo_prezzo → aggregabile
  * (non assumere "digitato": altrimenti le multi-posizione restano spezzate).
  */
 export function isRigaPrezzoDigitatoNonAggregabile(
@@ -154,9 +232,12 @@ export function isRigaPrezzoDigitatoNonAggregabile(
   const prodotto = normalizzaRelazione(riga.prodotti);
   if (!prodotto) return false;
   if (prodotto.tipo_prezzo !== "pezzo") return false;
+  // Griglia: aggregabile come mq/ml (dettaglio posizioni in nota_griglia)
+  if (prodotto.regola_prezzo === "griglia") return false;
   return isProdottoPrezzoDigitato({
     tipo_prezzo: "pezzo",
     prezzo_unitario: Number(prodotto.prezzo_unitario ?? 0),
+    regola_prezzo: prodotto.regola_prezzo,
   });
 }
 
@@ -204,6 +285,12 @@ export function raggruppaRigheComponi(
         colore_esterno: "",
         colore_ferramenta: "",
         vetro: "",
+        tipologia_apertura: "",
+        larghezza_mm: null,
+        altezza_mm: null,
+        extra_colore_nome: "",
+        extra_colore_percentuale: null,
+        nota_griglia: "",
         tipo_riga: "testo",
         testo_libero: riga.testo_libero ?? "",
         visibile_pdf: riga.visibile_pdf ?? true,
@@ -237,6 +324,12 @@ export function raggruppaRigheComponi(
         colore_esterno: "",
         colore_ferramenta: "",
         vetro: "",
+        tipologia_apertura: "",
+        larghezza_mm: null,
+        altezza_mm: null,
+        extra_colore_nome: "",
+        extra_colore_percentuale: null,
+        nota_griglia: "",
         tipo_riga: "posa",
         testo_libero: "",
         visibile_pdf: riga.visibile_pdf ?? true,
@@ -270,6 +363,15 @@ export function raggruppaRigheComponi(
         colore_esterno: coloreEsternoDaRiga(riga),
         colore_ferramenta: coloreFerramentaDaRiga(riga),
         vetro: vetroDaRiga(riga),
+        tipologia_apertura: (riga.tipologia_apertura ?? "").trim(),
+        larghezza_mm: riga.larghezza_mm ?? null,
+        altezza_mm: riga.altezza_mm ?? null,
+        extra_colore_nome: (riga.extra_colore_nome ?? "").trim(),
+        extra_colore_percentuale:
+          riga.extra_colore_percentuale != null
+            ? Number(riga.extra_colore_percentuale)
+            : null,
+        nota_griglia: notaGrigliaDaRiga(riga),
         tipo_riga: "prodotto",
         testo_libero: "",
         visibile_pdf: riga.visibile_pdf ?? true,
@@ -320,6 +422,15 @@ export function raggruppaRigheComponi(
         colore_esterno: coloreEsterno,
         colore_ferramenta: coloreFerramenta,
         vetro,
+        tipologia_apertura: (riga.tipologia_apertura ?? "").trim(),
+        larghezza_mm: riga.larghezza_mm ?? null,
+        altezza_mm: riga.altezza_mm ?? null,
+        extra_colore_nome: (riga.extra_colore_nome ?? "").trim(),
+        extra_colore_percentuale:
+          riga.extra_colore_percentuale != null
+            ? Number(riga.extra_colore_percentuale)
+            : null,
+        nota_griglia: notaGrigliaDaRiga(riga),
         tipo_riga: "prodotto",
         testo_libero: "",
         visibile_pdf: riga.visibile_pdf ?? true,
@@ -356,6 +467,9 @@ export function raggruppaRigheComponi(
         agg.colore_ferramenta = coloreFerramenta;
       }
       if (!agg.vetro && vetro) agg.vetro = vetro;
+      if (riga.tipologia_apertura || riga.larghezza_mm != null) {
+        agg.nota_griglia = appendNotaGrigliaPosizione(agg.nota_griglia, riga);
+      }
       continue;
     }
 
@@ -382,6 +496,15 @@ export function raggruppaRigheComponi(
       colore_esterno: coloreEsterno,
       colore_ferramenta: coloreFerramenta,
       vetro,
+      tipologia_apertura: (riga.tipologia_apertura ?? "").trim(),
+      larghezza_mm: riga.larghezza_mm ?? null,
+      altezza_mm: riga.altezza_mm ?? null,
+      extra_colore_nome: (riga.extra_colore_nome ?? "").trim(),
+      extra_colore_percentuale:
+        riga.extra_colore_percentuale != null
+          ? Number(riga.extra_colore_percentuale)
+          : null,
+      nota_griglia: notaGrigliaDaRiga(riga),
       tipo_riga: "prodotto",
       testo_libero: "",
       visibile_pdf: riga.visibile_pdf ?? true,

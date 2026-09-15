@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const DESCRIZIONE_POSA_DEFAULT_FALLBACK =
   "POSA IN OPERA\nIN RISTRUTTURAZIONE SENZA OPERE MURARIE CON SISTEMA POSACLIMA CERTIFICATO";
 
+export const CHIAVE_DESCRIZIONE_POSA = "descrizione_posa_default";
+
 /** HTML minimale per l'editor descrizione commerciale. */
 export function descrizionePosaDefaultToHtml(raw: string): string {
   const lines = raw
@@ -29,7 +31,7 @@ export async function caricaDescrizionePosaDefault(
   const { data, error } = await supabase
     .from("config_sistema")
     .select("valore")
-    .eq("chiave", "descrizione_posa_default")
+    .eq("chiave", CHIAVE_DESCRIZIONE_POSA)
     .maybeSingle();
 
   if (error || !data?.valore?.trim()) {

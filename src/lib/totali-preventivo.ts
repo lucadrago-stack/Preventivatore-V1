@@ -64,8 +64,13 @@ export function calcolaTotaliPreventivo(
   const dopoSconto1 = prodottiLordi * (1 - sconto1 / 100);
   const nettoDaCascata = dopoSconto1 * (1 - sconto2 / 100);
   const override = params.nettoProdottiOverride;
-  const nettoProdotti =
-    override != null && Number.isFinite(override) ? override : nettoDaCascata;
+  // Override 0 con prodotti > 0 è quasi sempre dato spurio (campo vuoto salvato
+  // come 0): ignoralo e usa la cascata sconti.
+  const usaOverride =
+    override != null &&
+    Number.isFinite(override) &&
+    !(override <= 0 && prodottiLordi > 0);
+  const nettoProdotti = usaOverride ? (override as number) : nettoDaCascata;
   const imponibile = nettoProdotti + totaleServizi;
   const importoIva = imponibile * (ivaPercentuale / 100);
 

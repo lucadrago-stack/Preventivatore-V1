@@ -2,12 +2,11 @@ import { jsPDF } from "jspdf";
 import autoTable, { type CellDef, type CellHookData, type RowInput } from "jspdf-autotable";
 import {
   descrizionePlainText,
-  isDescrizioneCentrata,
   parseDescrizioneFormattata,
   type DescrizioneSegmento,
 } from "@/lib/descrizione-formattata";
 import { formatEuro, formatDataDocumento } from "@/lib/format";
-import { uriEmail, uriTelefono } from "@/lib/pdf-link";
+import { formatTelefonoPdf, uriEmail, uriTelefono } from "@/lib/pdf-link";
 import {
   etichettaImportoServizio,
   etichettaNotaServizio,
@@ -16,6 +15,24 @@ import type { DatiFinanziamentoPdfInput } from "@/lib/banner-finanziamento-pdf";
 import { preparaPaginaInvestimentoPdf } from "@/lib/banner-finanziamento-pdf";
 
 const MARGIN = 12;
+
+/** Logo PosaClima nella colonna Note delle righe posa (mm). */
+const POSA_LOGO_PUBLIC_PATH = "pdf-template/logo-posaclima.png";
+/** ~95–100px a 96dpi; colonna note = 38mm. */
+const POSA_LOGO_MAX_W_MM = 26;
+const POSA_LOGO_PAD_MM = 1.2;
+
+/** Fascia loghi in cima alla pagina prodotti. */
+const LOGO_FASCIA = {
+  bruno: "pdf-template/logo.png",
+  iwg: "pdf-template/logo-iwg.png",
+  posaclima: "pdf-template/logo-posaclima.png",
+  /** ~60px @96dpi — brand principale più leggibile */
+  brunoHMm: 16,
+  /** IWG / PosaClima allineati ma un filo sotto Bruno */
+  altriHMm: 13,
+  bandHMm: 26,
+} as const;
 
 /** Palette brand (RGB per jsPDF / autoTable) */
 const C = {
@@ -172,11 +189,127 @@ const TABLE_BASE = {
   theme: "plain" as const,
 };
 
-function buildRigheProdottiBody(righe: RigaPaginaProdottiPdf[]): RowInput[] {
+type BodyRigaMeta = "testo" | "posa" | "prodotto";
+
+type LogoPngCaricato = {
+  dataUrl: string;
+  nativeW: number;
+  nativeH: number;
+};
+
+type LogoDisegnoMm = {
+  dataUrl: string;
+  widthMm: number;
+  heightMm: number;
+};
+
+function pngDimensioni(bytes: Uint8Array): { w: number; h: number } | null {
+  for (let i = 8; i < Math.min(bytes.length - 12, 200); i++) {
+    if (
+      bytes[i] === 0x49 &&
+      bytes[i + 1] === 0x48 &&
+      bytes[i + 2] === 0x44 &&
+      bytes[i + 3] === 0x52
+    ) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return { w: view.getUint32(i + 4), h: view.getUint32(i + 8) };
+    }
+  }
+  return null;
+}
+
+function bytesToPngDataUrl(bytes: Uint8Array): string {
+  const base64 =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(bytes).toString("base64")
+      : btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
+  return `data:image/png;base64,${base64}`;
+}
+
+async function caricaPngDaPublic(
+  relativePath: string,
+): Promise<LogoPngCaricato | null> {
+  try {
+    let bytes: Uint8Array | null = null;
+    const normalized = relativePath.replace(/^\/+/, "");
+
+    if (typeof window !== "undefined") {
+      const response = await fetch(`/${normalized}`);
+      if (!response.ok) return null;
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } else {
+      const { readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      bytes = new Uint8Array(
+        await readFile(join(process.cwd(), "public", ...normalized.split("/"))),
+      );
+    }
+
+    if (!bytes || bytes.length < 24) return null;
+    const dims = pngDimensioni(bytes);
+    if (!dims || dims.w <= 0 || dims.h <= 0) return null;
+
+    return {
+      dataUrl: bytesToPngDataUrl(bytes),
+      nativeW: dims.w,
+      nativeH: dims.h,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function logoAAltezzaMm(
+  logo: LogoPngCaricato,
+  heightMm: number,
+): LogoDisegnoMm {
+  return {
+    dataUrl: logo.dataUrl,
+    heightMm,
+    widthMm: heightMm * (logo.nativeW / logo.nativeH),
+  };
+}
+
+async function caricaLogoPosaclimaPdf(): Promise<LogoDisegnoMm | null> {
+  const logo = await caricaPngDaPublic(POSA_LOGO_PUBLIC_PATH);
+  if (!logo) return null;
+  const heightMm = POSA_LOGO_MAX_W_MM * (logo.nativeH / logo.nativeW);
+  return {
+    dataUrl: logo.dataUrl,
+    widthMm: POSA_LOGO_MAX_W_MM,
+    heightMm,
+  };
+}
+
+async function caricaLoghiFasciaPdf(): Promise<{
+  bruno: LogoDisegnoMm | null;
+  iwg: LogoDisegnoMm | null;
+  posaclima: LogoDisegnoMm | null;
+}> {
+  const [brunoRaw, iwgRaw, posaRaw] = await Promise.all([
+    caricaPngDaPublic(LOGO_FASCIA.bruno),
+    caricaPngDaPublic(LOGO_FASCIA.iwg),
+    caricaPngDaPublic(LOGO_FASCIA.posaclima),
+  ]);
+  return {
+    bruno: brunoRaw ? logoAAltezzaMm(brunoRaw, LOGO_FASCIA.brunoHMm) : null,
+    iwg: iwgRaw ? logoAAltezzaMm(iwgRaw, LOGO_FASCIA.altriHMm) : null,
+    posaclima: posaRaw
+      ? logoAAltezzaMm(posaRaw, LOGO_FASCIA.altriHMm)
+      : null,
+  };
+}
+
+function buildRigheProdottiBody(
+  righe: RigaPaginaProdottiPdf[],
+  logo: LogoDisegnoMm | null,
+): { body: RowInput[]; bodyMeta: BodyRigaMeta[] } {
   const body: RowInput[] = [];
+  const bodyMeta: BodyRigaMeta[] = [];
 
   for (const riga of righe) {
     if (riga.tipo_riga === "testo") {
+      bodyMeta.push("testo");
       body.push([
         {
           content: riga.testo_libero || "—",
@@ -193,10 +326,35 @@ function buildRigheProdottiBody(righe: RigaPaginaProdottiPdf[]): RowInput[] {
       continue;
     }
 
+    const isPosa = riga.tipo_riga === "posa";
+    bodyMeta.push(isPosa ? "posa" : "prodotto");
+
+    const notaTrim = (riga.nota ?? "").trim();
+    let notaCell: string | CellDef;
+    if (isPosa && logo) {
+      const topPad = logo.heightMm + POSA_LOGO_PAD_MM * 2;
+      notaCell = {
+        content: notaTrim || " ",
+        styles: {
+          cellPadding: {
+            top: topPad,
+            right: 2,
+            bottom: 1.5,
+            left: 2,
+          },
+          valign: "top",
+          textColor: C.textMuted,
+          fontSize: 7,
+        },
+      } satisfies CellDef;
+    } else {
+      notaCell = notaTrim || "—";
+    }
+
     body.push([
       riga.quantitaEtichetta ?? String(riga.quantita),
       riga.descrizione || "—",
-      riga.nota || "—",
+      notaCell,
       riga.importoEtichetta
         ? riga.importoEtichetta
         : riga.importo_display != null
@@ -205,7 +363,67 @@ function buildRigheProdottiBody(righe: RigaPaginaProdottiPdf[]): RowInput[] {
     ]);
   }
 
-  return body;
+  return { body, bodyMeta };
+}
+
+function drawLogoPosaclimaInNota(
+  pdf: jsPDF,
+  data: CellHookData,
+  logo: LogoDisegnoMm,
+) {
+  const x = data.cell.x + POSA_LOGO_PAD_MM;
+  const y = data.cell.y + POSA_LOGO_PAD_MM;
+  const maxW = Math.max(4, data.cell.width - POSA_LOGO_PAD_MM * 2);
+  const w = Math.min(logo.widthMm, maxW);
+  const h = w * (logo.heightMm / logo.widthMm);
+  pdf.addImage(logo.dataUrl, "PNG", x, y, w, h);
+}
+
+function drawFasciaLoghi(
+  pdf: jsPDF,
+  y: number,
+  loghi: {
+    bruno: LogoDisegnoMm | null;
+    iwg: LogoDisegnoMm | null;
+    posaclima: LogoDisegnoMm | null;
+  },
+): number {
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const bandH = LOGO_FASCIA.bandHMm;
+  const contentW = pageWidth - MARGIN * 2;
+
+  pdf.setFillColor(...C.white);
+  pdf.setDrawColor(...C.border);
+  pdf.setLineWidth(0.3);
+  pdf.rect(MARGIN, y, contentW, bandH, "FD");
+
+  const items = [loghi.bruno, loghi.iwg, loghi.posaclima].filter(
+    (l): l is LogoDisegnoMm => l != null,
+  );
+
+  if (items.length === 0) {
+    return y + bandH + 4;
+  }
+
+  const totalW = items.reduce((sum, l) => sum + l.widthMm, 0);
+  const gaps = items.length + 1;
+  const gap = Math.max(4, (contentW - totalW) / gaps);
+
+  let cursorX = MARGIN + gap;
+  for (const logo of items) {
+    const logoY = y + (bandH - logo.heightMm) / 2;
+    pdf.addImage(
+      logo.dataUrl,
+      "PNG",
+      cursorX,
+      logoY,
+      logo.widthMm,
+      logo.heightMm,
+    );
+    cursorX += logo.widthMm + gap;
+  }
+
+  return y + bandH + 4;
 }
 
 function wrapSegmentiSuLarghezza(
@@ -248,7 +466,8 @@ function drawDescrizioneFormattataInCella(
   data: CellHookData,
   raw: string,
 ) {
-  const { centered, lines } = parseDescrizioneFormattata(raw);
+  // Colonna Descrizione: sempre allineata a sinistra (ignora flag "centra" salvati).
+  const { lines } = parseDescrizioneFormattata(raw);
   const padLeft = data.cell.padding("left");
   const padRight = data.cell.padding("right");
   const padTop = data.cell.padding("top");
@@ -270,10 +489,7 @@ function drawDescrizioneFormattataInCella(
         continue;
       }
 
-      const rowWidth = pdf.getTextWidth(rowPlain);
-      let cursorX = centered
-        ? data.cell.x + padLeft + Math.max(0, (maxWidth - rowWidth) / 2)
-        : data.cell.x + padLeft;
+      let cursorX = data.cell.x + padLeft;
 
       for (const seg of row) {
         if (!seg.text) continue;
@@ -295,19 +511,19 @@ function isCellaDescrizioneProdotto(data: CellHookData): boolean {
   );
 }
 
-function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
+function drawIntestazione(
+  pdf: jsPDF,
+  dati: DatiPaginaProdottiPdf,
+  loghiFascia: {
+    bruno: LogoDisegnoMm | null;
+    iwg: LogoDisegnoMm | null;
+    posaclima: LogoDisegnoMm | null;
+  },
+): number {
   const pageWidth = pdf.internal.pageSize.getWidth();
   let y = MARGIN + 2;
 
-  pdf.setDrawColor(...C.border);
-  pdf.setLineWidth(0.3);
-  pdf.setFillColor(...C.rowAlt);
-  pdf.rect(MARGIN, y, pageWidth - MARGIN * 2, 14, "FD");
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(8);
-  pdf.setTextColor(...C.textMuted);
-  pdf.text("LOGHI", pageWidth / 2, y + 8, { align: "center" });
-  y += 18;
+  y = drawFasciaLoghi(pdf, y, loghiFascia);
 
   const colWidth = (pageWidth - MARGIN * 2) / 2 - 4;
   const leftX = MARGIN;
@@ -330,9 +546,10 @@ function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
     pdf.setTextColor(...C.textMuted);
     pdf.text(label, leftX, y);
     const labelW = pdf.getTextWidth(label);
-    const telCli = (dati.clienteTelefono || "").trim() || "—";
+    const telCliRaw = (dati.clienteTelefono || "").trim();
+    const telCli = telCliRaw ? formatTelefonoPdf(telCliRaw) : "—";
     pdf.setTextColor(...C.text);
-    const telUri = uriTelefono(telCli);
+    const telUri = uriTelefono(telCliRaw);
     if (telUri && telCli !== "—") {
       pdf.textWithLink(telCli, leftX + labelW, y, { url: telUri });
     } else {
@@ -343,12 +560,13 @@ function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
 
   // Offer info on right
   let offertaY = y - 10.5;
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(7);
-  pdf.setTextColor(...C.textMuted);
-  pdf.text("Data", rightX, offertaY);
-  pdf.setTextColor(...C.text);
-  pdf.text(formatDataDocumento(dati.dataPreventivo), rightX + 20, offertaY);
+  drawInfoLine(
+    pdf,
+    rightX,
+    offertaY,
+    "Data",
+    formatDataDocumento(dati.dataPreventivo),
+  );
   offertaY += 3.5;
   drawInfoLine(pdf, rightX, offertaY, "Offerta n.", dati.numeroPreventivo);
   offertaY += 3.5;
@@ -394,23 +612,23 @@ function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
   // Tabella consulente tecnico (layout fisso; celle vuote se commerciale assente)
   {
     const tableW = pageWidth - MARGIN * 2;
-    const col1 = 30;
+    const col1 = 34;
     const col2 = tableW - col1 - 35 - 28;
-    const headerH = 5;
-    const rowH = 8;
+    const headerH = 6.5;
+    const rowH = 11;
 
     pdf.setFillColor(...C.navy);
     pdf.rect(MARGIN, y, tableW, headerH, "F");
     pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(6);
+    pdf.setFontSize(7.5);
     pdf.setTextColor(...C.white);
     let hx = MARGIN + 2;
-    pdf.text("CONSULENTE TECNICO", hx, y + 3.5);
+    pdf.text("CONSULENTE TECNICO", hx, y + 4.5);
     hx += col1;
-    pdf.text("CONTATTI CONSULENTE", hx, y + 3.5);
+    pdf.text("CONTATTI CONSULENTE", hx, y + 4.5);
     hx += col2;
-    pdf.text("CONSEGNA", hx, y + 3.5);
-    pdf.text("VALIDITA' OFFERTA", MARGIN + tableW - 28, y + 3.5);
+    pdf.text("CONSEGNA", hx, y + 4.5);
+    pdf.text("VALIDITA' OFFERTA", MARGIN + tableW - 28, y + 4.5);
     y += headerH;
 
     pdf.setFillColor(...C.white);
@@ -420,27 +638,28 @@ function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
 
     const nomeVenditore = dati.commerciale?.nome?.trim() ?? "";
     pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(7);
+    pdf.setFontSize(9);
     pdf.setTextColor(...C.navy);
     if (nomeVenditore) {
-      pdf.text(nomeVenditore, MARGIN + 2, y + 5);
+      pdf.text(nomeVenditore, MARGIN + 2, y + 7);
     }
 
     const tel = dati.commerciale?.telefono?.trim() ?? "";
     const mail = dati.commerciale?.email?.trim() ?? "";
     pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(6.5);
+    pdf.setFontSize(8);
     pdf.setTextColor(...C.text);
     let contattiX = MARGIN + 2 + col1;
-    const contattiY = y + 5;
+    const contattiY = y + 7;
     if (tel) {
+      const telDisplay = formatTelefonoPdf(tel);
       const telUri = uriTelefono(tel);
       if (telUri) {
-        pdf.textWithLink(tel, contattiX, contattiY, { url: telUri });
+        pdf.textWithLink(telDisplay, contattiX, contattiY, { url: telUri });
       } else {
-        pdf.text(tel, contattiX, contattiY);
+        pdf.text(telDisplay, contattiX, contattiY);
       }
-      contattiX += pdf.getTextWidth(tel);
+      contattiX += pdf.getTextWidth(telDisplay);
     }
     if (tel && mail) {
       const sep = " · ";
@@ -456,11 +675,11 @@ function drawIntestazione(pdf: jsPDF, dati: DatiPaginaProdottiPdf): number {
       }
     }
 
-    pdf.text("VEDASI DIETRO", MARGIN + 2 + col1 + col2, y + 5);
+    pdf.text("VEDASI DIETRO", MARGIN + 2 + col1 + col2, y + 7);
     pdf.text(
       `${dati.validitaGiorni || "30"} GIORNI`,
       MARGIN + tableW - 28,
-      y + 5,
+      y + 7,
     );
 
     y += rowH + 4;
@@ -637,6 +856,38 @@ function drawCheckboxVuota(
   pdf.setLineWidth(0.45);
   pdf.setFillColor(...C.white);
   pdf.roundedRect(x, y, size, size, 0.6, 0.6, "FD");
+}
+
+/** Cerchio radio vuoto — scelta singola a biro sul foglio stampato. */
+function drawRadioVuoto(
+  pdf: jsPDF,
+  x: number,
+  y: number,
+  size: number,
+  stroke: [number, number, number],
+) {
+  const r = size / 2;
+  pdf.setDrawColor(...stroke);
+  pdf.setLineWidth(0.5);
+  pdf.setFillColor(...C.white);
+  pdf.circle(x + r, y + r, r, "FD");
+}
+
+/** Radio già selezionato (modalità PDF solo opzione proposta). */
+function drawRadioPieno(
+  pdf: jsPDF,
+  x: number,
+  y: number,
+  size: number,
+  stroke: [number, number, number],
+) {
+  const r = size / 2;
+  pdf.setDrawColor(...stroke);
+  pdf.setLineWidth(0.5);
+  pdf.setFillColor(...C.white);
+  pdf.circle(x + r, y + r, r, "FD");
+  pdf.setFillColor(...stroke);
+  pdf.circle(x + r, y + r, r * 0.45, "F");
 }
 /**
  * Pagina "Il tuo investimento".
@@ -855,22 +1106,35 @@ function drawPaginaInvestimento(
   pdf.setFont("helvetica", "bold");
   pdf.setFontSize(11);
   pdf.setTextColor(...I.title);
-  pdf.text("Le nostre soluzioni di pagamento", MARGIN + 8, y + 6);
+  pdf.text(
+    model.soloScelta
+      ? "Soluzione di pagamento proposta"
+      : "Le nostre soluzioni di pagamento",
+    MARGIN + 8,
+    y + 6,
+  );
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(8);
   pdf.setTextColor(...I.muted);
-  pdf.text("Barra l'opzione che preferisci", MARGIN + 8, y + 11);
+  pdf.text(
+    model.soloScelta
+      ? "Opzione inclusa in questo preventivo"
+      : "Segna un'unica opzione che preferisci",
+    MARGIN + 8,
+    y + 11,
+  );
   y += headerH + 5;
 
   if (model.promo20) {
     const p = model.promo20;
-    const ph = 18;
+    const ph = 26;
     pdf.setFillColor(...I.white);
     pdf.setDrawColor(...I.redDark);
     pdf.setLineWidth(0.5);
     pdf.roundedRect(MARGIN, y, contentW, ph, 1.5, 1.5, "FD");
 
-    drawCheckboxVuota(
+    const drawRadio = model.soloScelta ? drawRadioPieno : drawRadioVuoto;
+    drawRadio(
       pdf,
       MARGIN + 5,
       y + (ph - checkSize) / 2,
@@ -879,46 +1143,58 @@ function drawPaginaInvestimento(
     );
 
     const textX = MARGIN + 5 + checkSize + 4;
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(10);
-    pdf.setTextColor(...I.title);
-    pdf.text("20 mesi a tasso zero", textX, y + 7);
-
-    const badgePromoX = textX + pdf.getTextWidth("20 mesi a tasso zero ") + 2;
-    pdf.setFillColor(...I.redSoft);
-    pdf.setDrawColor(...I.red);
-    pdf.setLineWidth(0.35);
-    pdf.roundedRect(badgePromoX, y + 3.5, 14, 5, 0.6, 0.6, "FD");
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(6.5);
-    pdf.setTextColor(...I.redDark);
-    pdf.text("PROMO", badgePromoX + 7, y + 7, { align: "center" });
-
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(8);
-    pdf.setTextColor(...I.muted);
-    pdf.text(
-      `Anticipo ${formatEuro(p.anticipo)} · finanziato ${formatEuro(p.importoFinanziato)} · interessi 0`,
-      textX,
-      y + 13.5,
-    );
-
     const rightX = MARGIN + contentW - 5;
+    // Colonna rata riservata a destra: il testo a sinistra non ci entra.
+    const rataColW = 36;
+    const leftMaxX = rightX - rataColW;
+    const leftMaxW = Math.max(40, leftMaxX - textX);
+
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(13);
     pdf.setTextColor(...I.title);
-    pdf.text(formatEuro(p.rataMensile), rightX, y + 8, { align: "right" });
+    pdf.text(formatEuro(p.rataMensile), rightX, y + 11, { align: "right" });
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(8);
     pdf.setTextColor(...I.muted);
-    pdf.text("× 20 mesi", rightX, y + 13.5, { align: "right" });
+    pdf.text("× 20 mesi", rightX, y + 16.5, { align: "right" });
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(10);
+    pdf.setTextColor(...I.title);
+    const titoloPromo = "20 mesi a tasso zero";
+    pdf.text(titoloPromo, textX, y + 7);
+
+    const badgeW = 14;
+    const badgePromoX = textX + pdf.getTextWidth(titoloPromo) + 3;
+    if (badgePromoX + badgeW <= leftMaxX) {
+      pdf.setFillColor(...I.redSoft);
+      pdf.setDrawColor(...I.red);
+      pdf.setLineWidth(0.35);
+      pdf.roundedRect(badgePromoX, y + 3.5, badgeW, 5, 0.6, 0.6, "FD");
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(6.5);
+      pdf.setTextColor(...I.redDark);
+      pdf.text("PROMO", badgePromoX + badgeW / 2, y + 7, { align: "center" });
+    }
+
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(...I.title);
+    const importoLine = `Importo contratto ${formatEuro(p.importoFatturato)}`;
+    pdf.text(pdf.splitTextToSize(importoLine, leftMaxW)[0], textX, y + 14.5);
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(...I.muted);
+    const dettaglio = `Anticipo all'ordine ${formatEuro(p.anticipo)} · finanziato ${formatEuro(p.importoFinanziato)} · interessi 0`;
+    pdf.text(pdf.splitTextToSize(dettaglio, leftMaxW)[0], textX, y + 20.5);
 
     y += ph + 4;
   }
 
   if (model.cardsFamiglia.length > 0) {
     const famHeaderH = 10;
-    const rowH = 13;
+    const rowH = 14;
     const blockH = famHeaderH + model.cardsFamiglia.length * rowH;
     const bx = MARGIN;
     const bw = contentW;
@@ -937,15 +1213,12 @@ function drawPaginaInvestimento(
     pdf.setFontSize(9);
     pdf.setTextColor(...I.title);
     pdf.text(model.famigliaLabel, bx + 5, y + 6.5);
-    pdf.setFont("helvetica", "normal");
-    pdf.setFontSize(7.5);
-    pdf.setTextColor(...I.muted);
-    pdf.text(
-      `Importo ${formatEuro(model.bloccoImportoFatturato)} · anticipo ${formatEuro(model.bloccoAnticipo)}`,
-      bx + bw - 5,
-      y + 6.5,
-      { align: "right" },
-    );
+
+    const importoTxt = `Importo contratto ${formatEuro(model.bloccoImportoFatturato)}`;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(9);
+    pdf.setTextColor(...I.title);
+    pdf.text(importoTxt, bx + bw - 5, y + 6.5, { align: "right" });
 
     let rowY = y + famHeaderH;
     model.cardsFamiglia.forEach((card, index) => {
@@ -955,7 +1228,8 @@ function drawPaginaInvestimento(
         pdf.line(bx, rowY, bx + bw, rowY);
       }
 
-      drawCheckboxVuota(
+      const drawRadio = model.soloScelta ? drawRadioPieno : drawRadioVuoto;
+      drawRadio(
         pdf,
         bx + 4,
         rowY + (rowH - checkSize) / 2,
@@ -967,16 +1241,30 @@ function drawPaginaInvestimento(
       const tanLabel = card.doppioPiano
         ? `TAN ${formatTanPdf(card.tanPrimaMeta ?? 0)} / ${formatTanPdf(card.tan)}`
         : `TAN ${formatTanPdf(card.tan)}`;
+      const anticipoLabel =
+        card.anticipo > 0
+          ? ` · anticipo all'ordine ${formatEuro(card.anticipo)}`
+          : "";
 
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(9.5);
       pdf.setTextColor(...I.text);
       const mesiLabel = `${card.durataMesi} mesi`;
       const mesiW = pdf.getTextWidth(mesiLabel);
-      pdf.text(mesiLabel, textX, rowY + 8);
+      pdf.text(mesiLabel, textX, rowY + 8.5);
       pdf.setFontSize(7.5);
       pdf.setTextColor(...I.muted);
-      pdf.text(`  ·  ${tanLabel}`, textX + mesiW + 1.5, rowY + 8);
+      const dettaglioSinistra = `  ·  ${tanLabel}${anticipoLabel}`;
+      const rataReserve = 32;
+      const maxDettaglioW = Math.max(
+        20,
+        bx + bw - 5 - rataReserve - (textX + mesiW + 1.5),
+      );
+      pdf.text(
+        pdf.splitTextToSize(dettaglioSinistra, maxDettaglioW)[0],
+        textX + mesiW + 1.5,
+        rowY + 8.5,
+      );
 
       const rightX = bx + bw - 5;
       pdf.setFont("helvetica", "bold");
@@ -988,7 +1276,7 @@ function drawPaginaInvestimento(
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(7.5);
       pdf.setTextColor(...I.muted);
-      pdf.text("/mese", rightX, rowY + 10.5, { align: "right" });
+      pdf.text("/mese", rightX, rowY + 11.5, { align: "right" });
 
       rowY += rowH;
     });
@@ -1014,20 +1302,9 @@ function drawPaginaInvestimento(
   pdf.line(MARGIN, payEndY, MARGIN + contentW, payEndY);
 }
 
-/** Stima altezza blocchi finali per tenerli uniti sulla stessa pagina. */
-function stimaAltezzaFooter(dati: DatiPaginaProdottiPdf): number {
-  const extraSconti =
-    (dati.scontoPercentuale > 0 ? 1 : 0) + (dati.scontoPercentuale2 > 0 ? 1 : 0);
-  const righeRiepilogo = 2 + extraSconti;
-  let h = 6 + righeRiepilogo * 4 + 8;
-  if (dati.servizi.length > 0) {
-    h += 12 + dati.servizi.length * 5;
-  }
-  if (dati.notePreventivo.trim()) {
-    h += 20;
-  }
-  h += 20 + 26;
-  return h;
+/** Totale chiavi in mano + blocco IVA, da tenere uniti. */
+function stimaAltezzaTotaleEIva(): number {
+  return 16 + 4 + 22;
 }
 
 /** Genera la pagina prodotti con jsPDF + autoTable (page-break e intestazioni ripetute). */
@@ -1036,8 +1313,12 @@ export async function generaPaginaProdottiPdf(
 ): Promise<Uint8Array> {
   const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
   const pageWidth = pdf.internal.pageSize.getWidth();
+  const [logoPosaclima, loghiFascia] = await Promise.all([
+    caricaLogoPosaclimaPdf(),
+    caricaLoghiFasciaPdf(),
+  ]);
 
-  let y = drawIntestazione(pdf, dati);
+  let y = drawIntestazione(pdf, dati, loghiFascia);
 
   // "FORNITURA E POSA" section header (like the real template)
   const fepW = pageWidth - MARGIN * 2;
@@ -1056,11 +1337,12 @@ export async function generaPaginaProdottiPdf(
     pdf.text("Nessuna riga nel preventivo.", MARGIN, y);
     y += 6;
   } else {
+    const { body, bodyMeta } = buildRigheProdottiBody(dati.righe, logoPosaclima);
     autoTable(pdf, {
       ...TABLE_BASE,
       startY: y,
       head: [["Q.TA", "DESCRIZIONE", "NOTE/CARATTERISTICHE", "IMPORTO"]],
-      body: buildRigheProdottiBody(dati.righe),
+      body,
       columnStyles: {
         0: {
           cellWidth: 12,
@@ -1069,7 +1351,7 @@ export async function generaPaginaProdottiPdf(
           textColor: C.navy,
           halign: "center",
         },
-        1: { cellWidth: "auto", fontSize: 8 },
+        1: { cellWidth: "auto", fontSize: 8, halign: "left" },
         2: { cellWidth: 38, textColor: C.textMuted, fontSize: 7 },
         3: {
           cellWidth: 24,
@@ -1084,9 +1366,7 @@ export async function generaPaginaProdottiPdf(
         const raw = data.cell.raw as string;
         const plain = descrizionePlainText(raw);
         data.cell.text = (plain.length > 0 ? plain : "—").split("\n");
-        if (isDescrizioneCentrata(raw)) {
-          data.cell.styles.halign = "center";
-        }
+        data.cell.styles.halign = "left";
       },
       willDrawCell: (data) => {
         if (!isCellaDescrizioneProdotto(data)) return;
@@ -1094,22 +1374,35 @@ export async function generaPaginaProdottiPdf(
         data.cell.text = [];
       },
       didDrawCell: (data) => {
-        if (!isCellaDescrizioneProdotto(data)) return;
-        const raw = data.cell.raw as string;
-        drawDescrizioneFormattataInCella(
-          pdf,
-          data,
-          raw.length > 0 ? raw : "—",
-        );
+        if (isCellaDescrizioneProdotto(data)) {
+          const raw = data.cell.raw as string;
+          drawDescrizioneFormattataInCella(
+            pdf,
+            data,
+            raw.length > 0 ? raw : "—",
+          );
+          return;
+        }
+
+        if (
+          data.section === "body" &&
+          data.column.index === 2 &&
+          bodyMeta[data.row.index] === "posa" &&
+          logoPosaclima
+        ) {
+          drawLogoPosaclimaInNota(pdf, data, logoPosaclima);
+        }
       },
     });
     y = getTableEndY(pdf) + 5;
   }
 
-  y = ensureSpace(pdf, y, stimaAltezzaFooter(dati));
+  // Riempie lo spazio residuo: riepilogo/servizi/note possono stare sotto la tabella.
+  // Solo totale + IVA restano obbligatoriamente sulla stessa pagina.
   y = drawRiepilogoImporti(pdf, dati, y);
 
   if (dati.servizi.length > 0) {
+    y = ensureSpace(pdf, y, 5 + 18);
     y = drawSectionTitle(pdf, "SERVIZI COMPLEMENTARI", y);
 
     autoTable(pdf, {
@@ -1161,7 +1454,8 @@ export async function generaPaginaProdottiPdf(
     y += boxHeight + 5;
   }
 
-  y = drawTotaleChiaviInMano(pdf, dati, ensureSpace(pdf, y, 18));
+  y = ensureSpace(pdf, y, stimaAltezzaTotaleEIva());
+  y = drawTotaleChiaviInMano(pdf, dati, y);
   drawBloccoIva(pdf, dati, y);
 
   if (dati.finanziamento) {

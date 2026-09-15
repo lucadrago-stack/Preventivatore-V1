@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button, Input } from "@/components/ui";
+import { dataOggiPerInput } from "@/lib/format";
 import { createSupabaseClient } from "@/lib/supabase";
 
 type ClienteRubrica = {
@@ -83,15 +84,52 @@ export default function NuovoPreventivoModal({
     setError(null);
 
     const supabase = createSupabaseClient();
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+    if (userError || !user) {
+      setLoading(false);
+      setError("Sessione non valida. Effettua di nuovo l'accesso.");
+      return;
+    }
+
+    const { data: profilo, error: profiloError } = await supabase
+      .from("commerciali")
+      .select("id, ruolo")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (profiloError) {
+      setLoading(false);
+      setError(profiloError.message);
+      return;
+    }
+
+    // RLS: commerciale_id deve coincidere con commerciale_corrente_id().
+    // Admin può creare anche senza riga commerciali collegata.
+    const commercialeId = profilo?.id ?? null;
+    if (!commercialeId && profilo?.ruolo !== "admin") {
+      setLoading(false);
+      setError(
+        "Profilo commerciale non collegato all'utente. Contatta l'amministratore.",
+      );
+      return;
+    }
+
     const { data, error: insertError } = await supabase
       .from("preventivi")
       .insert({
         riferimento: riferimentoFinale,
+        commerciale_id: commercialeId,
         cliente_id: clienteId,
         cliente_nome: nomeCliente,
         cliente_cantiere: clienteCantiere.trim() || null,
         cliente_telefono: clienteTelefono.trim() || null,
         cliente_email: clienteEmail.trim() || null,
+        data_preventivo: dataOggiPerInput(),
+        finanziamento_attivo: true,
       })
       .select("id")
       .single();
