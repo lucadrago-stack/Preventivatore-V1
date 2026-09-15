@@ -2,10 +2,18 @@ import type { ReactNode } from "react";
 import { parseDescrizioneFormattata } from "@/lib/descrizione-formattata";
 import { formatEuro, formatDataDocumento } from "@/lib/format";
 import { formatTelefonoPdf } from "@/lib/pdf-link";
+import { round2 } from "@/lib/totali-preventivo";
 import {
   etichettaImportoServizio,
   etichettaNotaServizio,
 } from "@/lib/servizi-nota";
+
+function formatPercentualeSconto(n: number): string {
+  return `${round2(n).toLocaleString("it-IT", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}%`;
+}
 
 type SedePdf = {
   nome: string;
@@ -623,8 +631,8 @@ export default function PreventivoPdfDocument({
             </span>
             <span style={{ fontWeight: 600, color: BRAND.accent }}>
               {scontoPercentuale2 > 0
-                ? `${scontoPercentuale}% + ${scontoPercentuale2}%`
-                : `${scontoPercentuale}%`}
+                ? `${formatPercentualeSconto(scontoPercentuale)} + ${formatPercentualeSconto(scontoPercentuale2)}`
+                : formatPercentualeSconto(scontoPercentuale)}
             </span>
           </div>
         )}

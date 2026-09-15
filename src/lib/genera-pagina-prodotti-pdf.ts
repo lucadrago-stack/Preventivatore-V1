@@ -7,6 +7,7 @@ import {
 } from "@/lib/descrizione-formattata";
 import { formatEuro, formatDataDocumento } from "@/lib/format";
 import { formatTelefonoPdf, uriEmail, uriTelefono } from "@/lib/pdf-link";
+import { round2 } from "@/lib/totali-preventivo";
 import {
   etichettaImportoServizio,
   etichettaNotaServizio,
@@ -709,9 +710,15 @@ function drawRiepilogoImporti(
 
   const scontoTotale = dati.scontoPercentuale + dati.scontoPercentuale2;
   if (scontoTotale > 0) {
-    const scontoLabel = dati.scontoPercentuale2 > 0
-      ? `${dati.scontoPercentuale}% + ${dati.scontoPercentuale2}%`
-      : `${dati.scontoPercentuale}%`;
+    const fmt = (n: number) =>
+      round2(n).toLocaleString("it-IT", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+      });
+    const scontoLabel =
+      dati.scontoPercentuale2 > 0
+        ? `${fmt(dati.scontoPercentuale)}% + ${fmt(dati.scontoPercentuale2)}%`
+        : `${fmt(dati.scontoPercentuale)}%`;
     righe.push({
       label: "Scontistica a Voi riservata",
       value: scontoLabel,

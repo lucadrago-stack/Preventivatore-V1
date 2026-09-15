@@ -422,25 +422,25 @@ function sanitizeNomeFileParte(valore: string, maxLen = 40): string {
     .trim()
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
-    .replace(/[^\w\s-]/g, "")
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s+/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "")
     .slice(0, maxLen);
 }
 
-/** Es. Preventivo_2026-001_Mario_Rossi_05-09-2026.pdf */
+/** Es. Preventivo_Mario_Rossi_2026-001_05-09-2026.pdf */
 function nomeFilePdf(opts: {
   clienteNome: string;
   numeroPreventivo: string;
   riferimento: string;
   data: string | null;
 }) {
-  const numero = sanitizeNomeFileParte(
-    opts.numeroPreventivo || opts.riferimento,
-    24,
-  );
   const cliente = sanitizeNomeFileParte(opts.clienteNome, 32);
+  const codice = sanitizeNomeFileParte(
+    opts.riferimento || opts.numeroPreventivo,
+    28,
+  );
   const rawData = opts.data?.slice(0, 10);
   let dataStr = new Date().toISOString().slice(0, 10);
   if (rawData && /^\d{4}-\d{2}-\d{2}$/.test(rawData)) {
@@ -450,7 +450,7 @@ function nomeFilePdf(opts: {
     dataStr = sanitizeNomeFileParte(rawData, 12) || dataStr;
   }
 
-  const parti = ["Preventivo", numero || null, cliente || null, dataStr].filter(
+  const parti = ["Preventivo", cliente || null, codice || null, dataStr].filter(
     (p): p is string => Boolean(p),
   );
   return `${parti.join("_")}.pdf`;
