@@ -137,3 +137,31 @@ export function ricalcolaSconto1DaNetto(params: {
 export function isIvaAliquota(n: number): n is IvaAliquota {
   return (IVA_ALIQUOTE as readonly number[]).includes(n);
 }
+
+/** Soglia oltre la quale avvisare (non blocca il salvataggio). */
+export const SCONTO_MAX_CONSIGLIATO = 20;
+
+export const MESSAGGIO_SCONTO_OLTRE_MAX =
+  "Lo sconto massimo è del 20%. Sconti maggiori devono essere concordati con l'amministrazione preventivamente.";
+
+/** Sconto complessivo a cascata: 1 − (1−s1/100)×(1−s2/100). */
+export function scontoEffettivoPercentuale(
+  sconto1: number,
+  sconto2: number,
+): number {
+  const s1 = Number.isFinite(sconto1) ? sconto1 : 0;
+  const s2 = Number.isFinite(sconto2) ? sconto2 : 0;
+  return (1 - (1 - s1 / 100) * (1 - s2 / 100)) * 100;
+}
+
+export function isScontoOltreMassimoConsigliato(
+  sconto1: number,
+  sconto2: number,
+): boolean {
+  return scontoEffettivoPercentuale(sconto1, sconto2) > SCONTO_MAX_CONSIGLIATO;
+}
+
+/** Chiave stabile per non ripetere lo stesso avviso in loop. */
+export function chiaveAvvisoSconto(sconto1: number, sconto2: number): string {
+  return `${round2(sconto1)}|${round2(sconto2)}`;
+}

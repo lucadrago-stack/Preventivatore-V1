@@ -42,7 +42,11 @@ import {
   type ConfigVariantiPosa,
   type PosaTipo,
 } from "@/lib/posa-categorie";
-import { ensureRigaPosaSeparata } from "@/lib/riga-posa";
+import {
+  pulisciRighePosaPreventivo,
+  removeRigaPosaPerParent,
+  syncRigaPosaSeparata,
+} from "@/lib/riga-posa";
 import {
   normalizzaModalitaMq,
   prossimoNumeroPosizione,
@@ -1572,8 +1576,14 @@ function PreventivoCategoriaForm() {
   }, [preventivoId]);
 
   const refreshTotali = useCallback(async () => {
+    const supabase = createSupabaseClient();
+    try {
+      await pulisciRighePosaPreventivo(supabase, preventivoId);
+    } catch {
+      /* ignore */
+    }
     await Promise.all([loadRighe(), loadTotalePreventivo()]);
-  }, [loadRighe, loadTotalePreventivo]);
+  }, [loadRighe, loadTotalePreventivo, preventivoId]);
 
   useEffect(() => {
     async function loadData() {
@@ -1583,6 +1593,12 @@ function PreventivoCategoriaForm() {
       const supabase = createSupabaseClient();
 
       try {
+        try {
+          await pulisciRighePosaPreventivo(supabase, preventivoId);
+        } catch {
+          /* ignore */
+        }
+
         let prodottiQuery = supabase
           .from("prodotti")
           .select(
@@ -2469,24 +2485,22 @@ function PreventivoCategoriaForm() {
         return;
       }
 
-      if (
-        isPosaAvanzata &&
-        posa &&
-        posaRigaSeparata &&
-        (calcolo.posa_importo ?? 0) > 0
-      ) {
-        try {
-          await ensureRigaPosaSeparata(supabase, {
+      try {
+        if (isPosaAvanzata) {
+          await syncRigaPosaSeparata(supabase, {
             preventivoId: Number(preventivoId),
             parentRigaId: editingRigaId,
-            importoPosaTotale: calcolo.posa_importo,
+            posaSeparata: posa && posaRigaSeparata,
+            importoPosaTotale: calcolo.posa_importo ?? 0,
             quantita: quantitaNum,
           });
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Errore riga posa");
-          setSaving(false);
-          return;
+        } else {
+          await removeRigaPosaPerParent(supabase, editingRigaId);
         }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Errore riga posa");
+        setSaving(false);
+        return;
       }
 
       await refreshTotali();
@@ -2671,15 +2685,14 @@ function PreventivoCategoriaForm() {
       }
     }
 
-    if (isPosaAvanzata && posa && posaRigaSeparata) {
+    if (isPosaAvanzata) {
       try {
         for (let i = 0; i < nuoveRighe.length; i++) {
-          const importoPosa = daInserire[i].calcolo.posa_importo ?? 0;
-          if (importoPosa <= 0) continue;
-          await ensureRigaPosaSeparata(supabase, {
+          await syncRigaPosaSeparata(supabase, {
             preventivoId: Number(preventivoId),
             parentRigaId: nuoveRighe[i].id,
-            importoPosaTotale: importoPosa,
+            posaSeparata: posa && posaRigaSeparata,
+            importoPosaTotale: daInserire[i].calcolo.posa_importo ?? 0,
             quantita: daInserire[i].quantitaNum,
           });
         }
@@ -2769,17 +2782,13 @@ function PreventivoCategoriaForm() {
       }
     }
 
-    if (
-      isPosaAvanzata &&
-      riga.posa &&
-      riga.posa_riga_separata &&
-      (riga.posa_importo ?? 0) > 0
-    ) {
+    if (isPosaAvanzata) {
       try {
-        await ensureRigaPosaSeparata(supabase, {
+        await syncRigaPosaSeparata(supabase, {
           preventivoId: Number(preventivoId),
           parentRigaId: nuovaRiga.id,
-          importoPosaTotale: Number(riga.posa_importo),
+          posaSeparata: !!riga.posa && riga.posa_riga_separata === true,
+          importoPosaTotale: Number(riga.posa_importo ?? 0),
           quantita: Number(riga.quantita) || 1,
         });
       } catch (err) {
@@ -2801,6 +2810,13 @@ function PreventivoCategoriaForm() {
     }
 
     const supabase = createSupabaseClient();
+
+    try {
+      await removeRigaPosaPerParent(supabase, rigaId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Errore riga posa");
+      return;
+    }
 
     const { error: flagDeleteError } = await supabase
       .from("righe_flag")

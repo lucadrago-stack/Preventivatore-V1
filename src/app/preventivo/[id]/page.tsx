@@ -28,6 +28,11 @@ import {
   importoRigaCompleto,
   isCategoriaPosaAvanzata,
 } from "@/lib/posa-categorie";
+import {
+  eliminaRighePosaERipristinaParent,
+  pulisciRighePosaPreventivo,
+  removeRigaPosaPerParent,
+} from "@/lib/riga-posa";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const POSIZIONE_LIBERA_LABEL = "Posizione libera";
@@ -290,6 +295,11 @@ export default function PreventivoPage() {
 
   const loadRighe = useCallback(async () => {
     const supabase = createSupabaseClient();
+    try {
+      await pulisciRighePosaPreventivo(supabase, preventivoId);
+    } catch {
+      /* non bloccare il riepilogo se la pulizia fallisce */
+    }
     setRighe(await fetchRighePreventivo(supabase, preventivoId));
   }, [preventivoId]);
 
@@ -749,25 +759,38 @@ export default function PreventivoPage() {
     setDeletingId(rigaId);
 
     const supabase = createSupabaseClient();
+    const riga = righe.find((r) => r.id === rigaId);
 
-    const { error: flagDeleteError } = await supabase
-      .from("righe_flag")
-      .delete()
-      .eq("riga_id", rigaId);
+    try {
+      if (riga?.tipo_riga === "posa") {
+        await eliminaRighePosaERipristinaParent(supabase, [rigaId]);
+      } else {
+        await removeRigaPosaPerParent(supabase, rigaId);
 
-    if (flagDeleteError) {
-      setError(flagDeleteError.message);
-      setDeletingId(null);
-      return;
-    }
+        const { error: flagDeleteError } = await supabase
+          .from("righe_flag")
+          .delete()
+          .eq("riga_id", rigaId);
 
-    const { error: deleteError } = await supabase
-      .from("righe")
-      .delete()
-      .eq("id", rigaId);
+        if (flagDeleteError) {
+          setError(flagDeleteError.message);
+          setDeletingId(null);
+          return;
+        }
 
-    if (deleteError) {
-      setError(deleteError.message);
+        const { error: deleteError } = await supabase
+          .from("righe")
+          .delete()
+          .eq("id", rigaId);
+
+        if (deleteError) {
+          setError(deleteError.message);
+          setDeletingId(null);
+          return;
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Errore eliminazione");
       setDeletingId(null);
       return;
     }

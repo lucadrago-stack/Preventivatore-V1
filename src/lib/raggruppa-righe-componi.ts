@@ -245,6 +245,12 @@ export type OpzioniRaggruppaRighe = {
   normalizeDescrizioneHtml: (raw: string) => string;
 };
 
+/** Una sola riga posa in Componi/PDF per visibilità (descrizioni possono differire leggermente tra categorie). */
+function chiaveAggregazionePosa(riga: RigaDbPerAggregazione): string {
+  const visibile = riga.visibile_pdf ?? true;
+  return `posa|${visibile ? "1" : "0"}`;
+}
+
 /**
  * Aggrega le righe DB per componi/PDF.
  * - stesso prodotto_id → 1 riga (qty + importi + posa sommati)
@@ -263,6 +269,7 @@ export function raggruppaRigheComponi(
 
   const risultato: RigaAggregataComponi[] = [];
   const indicePerProdotto = new Map<number, number>();
+  const indicePerPosa = new Map<string, number>();
 
   for (const riga of ordinate) {
     if (riga.tipo_riga === "testo") {
@@ -302,6 +309,31 @@ export function raggruppaRigheComponi(
     }
 
     if (riga.tipo_riga === "posa") {
+      const chiavePosa = chiaveAggregazionePosa(riga);
+      const posaIdx = indicePerPosa.get(chiavePosa);
+      if (posaIdx != null) {
+        const aggPosa = risultato[posaIdx];
+        aggPosa.righeIds.push(riga.id);
+        aggPosa.quantita += Number(riga.quantita) || 0;
+        aggPosa.prezzo_riga =
+          (aggPosa.prezzo_riga ?? 0) +
+          (riga.prezzo_riga != null ? Number(riga.prezzo_riga) : 0);
+        const descrizioneNuova = descrizioneCommercialeDefault(
+          riga,
+          options.normalizeDescrizioneHtml,
+        );
+        if (descrizioneNuova.length > aggPosa.descrizione.length) {
+          aggPosa.descrizione = descrizioneNuova;
+        }
+        const notaNuova = (riga.nota ?? "").trim();
+        if (notaNuova && !aggPosa.nota.trim()) {
+          aggPosa.nota = riga.nota ?? "";
+        }
+        continue;
+      }
+
+      const nuovoIdx = risultato.length;
+      indicePerPosa.set(chiavePosa, nuovoIdx);
       risultato.push({
         key: `posa-${riga.id}`,
         prodotto_id: null,

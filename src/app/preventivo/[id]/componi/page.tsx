@@ -23,7 +23,12 @@ import {
   totaleImportoRigheVisibili,
 } from "@/lib/posa-categorie";
 import { raggruppaRigheComponi } from "@/lib/raggruppa-righe-componi";
-import { ensureRigaPosaSeparata } from "@/lib/riga-posa";
+import {
+  eliminaRighePosaERipristinaParent,
+  pulisciRighePosaPreventivo,
+  removeRigaPosaPerParent,
+  syncRigaPosaSeparata,
+} from "@/lib/riga-posa";
 import {
   composiNotaConCaratteristiche,
   isPosaCertificataInclusaSuRiga,
@@ -59,9 +64,12 @@ import {
 } from "@/lib/versioni-preventivo";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  chiaveAvvisoSconto,
   calcolaTotaliPreventivo,
+  isScontoOltreMassimoConsigliato,
   IVA_ALIQUOTE,
   isIvaAliquota,
+  MESSAGGIO_SCONTO_OLTRE_MAX,
   parsePercentuale,
   ricalcolaSconto1DaNetto,
   round2,
@@ -847,6 +855,8 @@ export default function ComponiPreventivoPage() {
   const [serviziDirty, setServiziDirty] = useState(false);
   const [duplicatingKey, setDuplicatingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [scontoAvvisoAperto, setScontoAvvisoAperto] = useState(false);
+  const scontoAvvisoChiaveRef = useRef<string | null>(null);
 
   const righeRef = useRef(righe);
   const descrizioniDirtyRef = useRef(descrizioniDirty);
@@ -1023,6 +1033,12 @@ export default function ComponiPreventivoPage() {
   const loadData = useCallback(async () => {
     const supabase = createSupabaseClient();
 
+    try {
+      await pulisciRighePosaPreventivo(supabase, preventivoId);
+    } catch {
+      /* non bloccare Componi se la pulizia fallisce */
+    }
+
     const [preventivoResult, righeResult, serviziData, versioniData, catalogoData] =
       await Promise.all([
       supabase
@@ -1079,25 +1095,64 @@ export default function ComponiPreventivoPage() {
     const ivaCaricata = Number(preventivoResult.data.iva_percentuale ?? 10);
     const ivaLoad = isIvaAliquota(ivaCaricata) ? ivaCaricata : 10;
     setIvaPercentuale(ivaLoad);
+
+    const righeAgg = raggruppaRighe(righeResult.data as RigaDb[]);
+    const lordiLoad = totaleImportoRigheVisibili(
+      righeAgg.map((riga) => ({
+        tipo_riga: riga.tipo_riga,
+        visibile_pdf: riga.visibile_pdf,
+        prezzo_riga: riga.prezzo_riga,
+        posa_importo: riga.posa_inclusa ? riga.posa_importo : 0,
+        posa_riga_separata: riga.posa_riga_separata,
+      })),
+    );
+    const sconto2NumLoad = parsePercentuale(sconto2Load);
+
     let prezzoNettoLoad = "";
     let nettoOverrideLoad: number | null = null;
+    let targetDaScartare = false;
     if (preventivoResult.data.prezzo_netto_target != null) {
       const target = Number(preventivoResult.data.prezzo_netto_target);
-      // 0 (o non positivo) non è un target valido: tipicamente campo vuoto
-      // persistito male, che azzererebbe i totali.
       if (Number.isFinite(target) && target > 0) {
-        prezzoNettoLoad = String(preventivoResult.data.prezzo_netto_target);
-        setPrezzoNetto(prezzoNettoLoad);
-        nettoOverrideLoad = round2(target);
-        setNettoOverride(nettoOverrideLoad);
-      } else {
-        setPrezzoNetto("");
-        setNettoOverride(null);
+        const raggiungibile = ricalcolaSconto1DaNetto({
+          prodottiLordi: lordiLoad,
+          sconto2: sconto2NumLoad,
+          nettoTarget: target,
+        });
+        if (raggiungibile.ok) {
+          prezzoNettoLoad = String(preventivoResult.data.prezzo_netto_target);
+          nettoOverrideLoad = round2(target);
+        } else {
+          // Target spurio/obsoleto (es. 6500 su un lordo da 38k): non riapplicarlo.
+          targetDaScartare = true;
+        }
       }
-    } else {
-      setPrezzoNetto("");
-      setNettoOverride(null);
     }
+
+    if (nettoOverrideLoad != null) {
+      setPrezzoNetto(prezzoNettoLoad);
+      setNettoOverride(nettoOverrideLoad);
+      setNettoNonRaggiungibile(false);
+    } else {
+      const nettoDaSconti = calcolaTotaliPreventivo({
+        prodottiLordi: lordiLoad,
+        sconto1: parsePercentuale(sconto1Load),
+        sconto2: sconto2NumLoad,
+        totaleServizi: 0,
+        ivaPercentuale: ivaLoad,
+      }).nettoProdotti;
+      setPrezzoNetto(round2(nettoDaSconti).toFixed(2));
+      setNettoOverride(null);
+      setNettoNonRaggiungibile(false);
+    }
+
+    if (targetDaScartare) {
+      void supabase
+        .from("preventivi")
+        .update({ prezzo_netto_target: null })
+        .eq("id", preventivoId);
+    }
+
     setSnapTotali(
       serializzaSnapTotali({
         scontoPercentuale: sconto1Load,
@@ -1107,7 +1162,7 @@ export default function ComponiPreventivoPage() {
       }),
     );
 
-    setRighe(raggruppaRighe(righeResult.data as RigaDb[]));
+    setRighe(righeAgg);
 
     setServizi(
       serviziData.map((servizio) => ({
@@ -1312,7 +1367,11 @@ export default function ComponiPreventivoPage() {
       nettoTarget: nettoOverride,
     });
     if (!risultato.ok) {
-      setNettoNonRaggiungibile(true);
+      // Target non più raggiungibile (prodotti cambiati / valore spurio):
+      // togli l'override così non resta bloccato al rientro.
+      setNettoNonRaggiungibile(false);
+      setNettoOverride(null);
+      setSconto1Preciso(null);
       return;
     }
     setNettoNonRaggiungibile(false);
@@ -1357,6 +1416,24 @@ export default function ComponiPreventivoPage() {
     nettoOverride,
   ]);
 
+  function apriAvvisoScontoSeNecessario(sconto1: number, sconto2: number) {
+    if (!isScontoOltreMassimoConsigliato(sconto1, sconto2)) {
+      scontoAvvisoChiaveRef.current = null;
+      return;
+    }
+    const chiave = chiaveAvvisoSconto(sconto1, sconto2);
+    // Evita loop: blur + debounce + OK non ripresentano lo stesso avviso.
+    if (scontoAvvisoChiaveRef.current === chiave || scontoAvvisoAperto) {
+      return;
+    }
+    scontoAvvisoChiaveRef.current = chiave;
+    setScontoAvvisoAperto(true);
+  }
+
+  function chiudiAvvisoSconto() {
+    setScontoAvvisoAperto(false);
+  }
+
   function applicaNettoTarget(raw: string) {
     if (raw.trim() === "" || Number(raw.replace(",", ".")) === 0) {
       // Campo svuotato / 0 → sconti di default 10% + 0%, nessun override
@@ -1365,6 +1442,7 @@ export default function ComponiPreventivoPage() {
       setSconto1Preciso(null);
       setScontoPercentuale("10");
       setScontoPercentuale2("0");
+      scontoAvvisoChiaveRef.current = null;
       return;
     }
     const nettoTarget = Number(raw.replace(",", "."));
@@ -1385,6 +1463,14 @@ export default function ComponiPreventivoPage() {
     setSconto1Preciso(risultato.sconto1);
     setScontoPercentuale(round2(risultato.sconto1).toFixed(2));
     setNettoOverride(round2(nettoTarget));
+    apriAvvisoScontoSeNecessario(risultato.sconto1, scontoNum2);
+  }
+
+  function commitScontiConAvviso() {
+    const s1 = sconto1Preciso ?? parsePercentuale(scontoPercentuale);
+    const s2 = parsePercentuale(scontoPercentuale2);
+    apriAvvisoScontoSeNecessario(s1, s2);
+    triggerAutosaveTotali();
   }
 
   /** Commit immediato (blur / Invio): cancella eventuale debounce in corso. */
@@ -2532,6 +2618,13 @@ export default function ComponiPreventivoPage() {
   }
 
   async function handleDuplicaGruppoRiga(riga: RigaEditabile) {
+    if (riga.tipo_riga === "posa") {
+      setError(
+        "Le righe posa non si duplicano: duplica il prodotto con posa separata.",
+      );
+      return;
+    }
+
     setDuplicatingKey(riga.key);
     setError(null);
     const supabase = createSupabaseClient();
@@ -2634,9 +2727,10 @@ export default function ComponiPreventivoPage() {
         ) {
           continue;
         }
-        await ensureRigaPosaSeparata(supabase, {
+        await syncRigaPosaSeparata(supabase, {
           preventivoId: Number(preventivoId),
           parentRigaId: nuove[i].id,
+          posaSeparata: true,
           importoPosaTotale: Number(orig.posa_importo),
           quantita: Number(orig.quantita) || 1,
         });
@@ -2662,17 +2756,25 @@ export default function ComponiPreventivoPage() {
     const supabase = createSupabaseClient();
 
     try {
-      const { error: flagError } = await supabase
-        .from("righe_flag")
-        .delete()
-        .in("riga_id", riga.righeIds);
-      if (flagError) throw new Error(flagError.message);
+      if (riga.tipo_riga === "posa") {
+        await eliminaRighePosaERipristinaParent(supabase, riga.righeIds);
+      } else {
+        for (const id of riga.righeIds) {
+          await removeRigaPosaPerParent(supabase, id);
+        }
 
-      const { error: deleteError } = await supabase
-        .from("righe")
-        .delete()
-        .in("id", riga.righeIds);
-      if (deleteError) throw new Error(deleteError.message);
+        const { error: flagError } = await supabase
+          .from("righe_flag")
+          .delete()
+          .in("riga_id", riga.righeIds);
+        if (flagError) throw new Error(flagError.message);
+
+        const { error: deleteError } = await supabase
+          .from("righe")
+          .delete()
+          .in("id", riga.righeIds);
+        if (deleteError) throw new Error(deleteError.message);
+      }
 
       await loadData();
       mostraFeedback("Riga eliminata");
@@ -3257,8 +3359,9 @@ export default function ComponiPreventivoPage() {
                   setSconto1Preciso(null);
                   setNettoOverride(null);
                   setNettoNonRaggiungibile(false);
+                  scontoAvvisoChiaveRef.current = null;
                 }}
-                onBlur={() => triggerAutosaveTotali()}
+                onBlur={() => commitScontiConAvviso()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -3281,8 +3384,9 @@ export default function ComponiPreventivoPage() {
                 onChange={(e) => {
                   setScontoPercentuale2(e.target.value);
                   setNettoNonRaggiungibile(false);
+                  scontoAvvisoChiaveRef.current = null;
                 }}
-                onBlur={() => triggerAutosaveTotali()}
+                onBlur={() => commitScontiConAvviso()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -3876,6 +3980,36 @@ export default function ComponiPreventivoPage() {
             src={pdfAnteprima.url}
             className="min-h-0 w-full flex-1 bg-zinc-800"
           />
+        </div>
+      )}
+      {scontoAvvisoAperto && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 px-4"
+          role="presentation"
+          onClick={chiudiAvvisoSconto}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sconto-avviso-title"
+            className="w-full max-w-md rounded-lg border border-brand-border bg-white p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2
+              id="sconto-avviso-title"
+              className="text-base font-semibold text-brand-navy"
+            >
+              Sconto oltre il 20%
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-brand-text">
+              {MESSAGGIO_SCONTO_OLTRE_MAX}
+            </p>
+            <div className="mt-5 flex justify-end">
+              <Button type="button" onClick={chiudiAvvisoSconto}>
+                OK, ho capito
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </main>

@@ -7,6 +7,7 @@ import NuovoPreventivoModal from "@/components/NuovoPreventivoModal";
 import { Card, Input, PageTitle } from "@/components/ui";
 import { createSupabaseClient } from "@/lib/supabase";
 import { formatEuro, formatData, normalizzaRelazione, titoloPreventivo } from "@/lib/format";
+import { pulisciRighePosaPreventivo } from "@/lib/riga-posa";
 
 const POSIZIONE_LIBERA_LABEL = "Posizione libera";
 
@@ -448,6 +449,8 @@ export default function Home() {
           .eq("id", upd.id);
         if (parentError) throw new Error(parentError.message);
       }
+
+      await pulisciRighePosaPreventivo(supabase, nuovoPreventivo.id);
 
       // Batch insert all flags
       const tuttiFlag: { riga_id: number; flag_id: number }[] = [];
