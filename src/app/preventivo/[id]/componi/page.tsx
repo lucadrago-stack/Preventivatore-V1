@@ -24,7 +24,9 @@ import {
 } from "@/lib/posa-categorie";
 import { raggruppaRigheComponi } from "@/lib/raggruppa-righe-componi";
 import {
+  ensureFigliePosaMancanti,
   eliminaRighePosaERipristinaParent,
+  ETICHETTA_POSA_INCLUSA,
   pulisciRighePosaPreventivo,
   removeRigaPosaPerParent,
   syncRigaPosaSeparata,
@@ -131,6 +133,8 @@ type RigaDb = {
   posa_importo: number | null;
   posa: boolean | null;
   posa_riga_separata: boolean | null;
+  posa_inclusa_flag?: boolean | null;
+  parent_riga_id?: number | null;
   descrizione_cliente: string | null;
   descrizione_libera: string | null;
   descrizione_tecnica: string | null;
@@ -178,6 +182,7 @@ type RigaEditabile = {
   posa_importo: number | null;
   posa_inclusa: boolean;
   posa_riga_separata: boolean;
+  posa_inclusa_flag: boolean;
   is_posa_avanzata: boolean;
   is_libera: boolean;
   /** Descrizione commerciale (PDF cliente). */
@@ -699,7 +704,13 @@ function RigaRow({
         )}
       </td>
       <td className="w-28 px-3 py-2 text-right align-top font-medium whitespace-nowrap">
-        {riga.is_libera ? (
+        {riga.tipo_riga === "posa" &&
+        riga.posa_inclusa_flag &&
+        !(Number(riga.prezzo_riga) > 0) ? (
+          <span className="tracking-wide text-brand-navy">
+            {ETICHETTA_POSA_INCLUSA}
+          </span>
+        ) : riga.is_libera ? (
           <input
             type="number"
             min={0}
@@ -1035,8 +1046,9 @@ export default function ComponiPreventivoPage() {
 
     try {
       await pulisciRighePosaPreventivo(supabase, preventivoId);
+      await ensureFigliePosaMancanti(supabase, preventivoId);
     } catch {
-      /* non bloccare Componi se la pulizia fallisce */
+      /* non bloccare Componi se la sync posa fallisce */
     }
 
     const [preventivoResult, righeResult, serviziData, versioniData, catalogoData] =
@@ -1055,7 +1067,7 @@ export default function ComponiPreventivoPage() {
       supabase
         .from("righe")
         .select(
-          `id, quantita, prezzo_riga, posa_importo, posa, posa_riga_separata, descrizione_cliente, descrizione_libera,
+          `id, quantita, prezzo_riga, posa_importo, posa, posa_riga_separata, posa_inclusa_flag, parent_riga_id, descrizione_cliente, descrizione_libera,
           descrizione_tecnica, nota, colore, colore_interno, colore_esterno, colore_ferramenta, vetro, prodotto_id,
           ordine, visibile_pdf, tipo_riga, testo_libero,
           tipologia_apertura, larghezza_mm, altezza_mm, extra_colore_nome, extra_colore_percentuale,
@@ -1249,6 +1261,7 @@ export default function ComponiPreventivoPage() {
             posa_importo: riga.posa_importo,
             posa_inclusa: riga.posa_inclusa,
             posa_riga_separata: riga.posa_riga_separata,
+            posa_inclusa_flag: riga.posa_inclusa_flag,
             nome_prodotto: riga.nome_prodotto,
             quantita: riga.quantita,
             descrizione: riga.descrizione,
@@ -1970,11 +1983,26 @@ export default function ComponiPreventivoPage() {
           };
         }
         if (campo === "prezzo_riga") {
-          if (valore === "") return { ...riga, prezzo_riga: null };
+          if (valore === "") {
+            return {
+              ...riga,
+              prezzo_riga: null,
+              posa_inclusa_flag:
+                riga.tipo_riga === "posa" ? true : riga.posa_inclusa_flag,
+            };
+          }
           const n = Number(valore);
+          if (!Number.isFinite(n)) return riga;
           return {
             ...riga,
-            prezzo_riga: Number.isFinite(n) ? n : riga.prezzo_riga,
+            prezzo_riga: n,
+            // Digitando un importo > 0 la posa non è più "INCLUSA".
+            posa_inclusa_flag:
+              riga.tipo_riga === "posa" && n > 0
+                ? false
+                : riga.tipo_riga === "posa" && n === 0
+                  ? true
+                  : riga.posa_inclusa_flag,
           };
         }
         return { ...riga, [campo]: valore };
@@ -2204,6 +2232,12 @@ export default function ComponiPreventivoPage() {
           payload.descrizione_tecnica =
             riga.descrizione_tecnica.trim() ||
             (riga.tipo_riga === "posa" ? "Posa in opera" : "Riga libera");
+          if (riga.tipo_riga === "posa") {
+            payload.posa_inclusa_flag = riga.posa_inclusa_flag === true;
+            if (riga.posa_inclusa_flag) {
+              payload.prezzo_riga = 0;
+            }
+          }
         }
 
         const { error: updateError } = await supabase
@@ -2451,6 +2485,7 @@ export default function ComponiPreventivoPage() {
         posa_importo: null,
         posa_inclusa: false,
         posa_riga_separata: false,
+        posa_inclusa_flag: false,
         is_posa_avanzata: false,
         is_libera: true,
         descrizione: data.descrizione_cliente ?? data.descrizione_libera ?? "",
@@ -2524,6 +2559,7 @@ export default function ComponiPreventivoPage() {
         posa_importo: null,
         posa_inclusa: false,
         posa_riga_separata: false,
+        posa_inclusa_flag: false,
         is_posa_avanzata: false,
         is_libera: false,
         descrizione: "",
@@ -2618,13 +2654,6 @@ export default function ComponiPreventivoPage() {
   }
 
   async function handleDuplicaGruppoRiga(riga: RigaEditabile) {
-    if (riga.tipo_riga === "posa") {
-      setError(
-        "Le righe posa non si duplicano: duplica il prodotto con posa separata.",
-      );
-      return;
-    }
-
     setDuplicatingKey(riga.key);
     setError(null);
     const supabase = createSupabaseClient();
@@ -2637,7 +2666,7 @@ export default function ComponiPreventivoPage() {
           descrizione_libera, descrizione_cliente, descrizione_tecnica, nota, colore,
           colore_interno, colore_esterno, colore_ferramenta, vetro, prezzo_libero,
           prezzo_inserito, regola_applicata, posa_importo, posa_tipo, posa_manuale,
-          posa_riga_separata, modalita_mq, mq_diretti, riferimento_interno, ordine,
+          posa_riga_separata, posa_inclusa_flag, modalita_mq, mq_diretti, riferimento_interno, ordine,
           visibile_pdf, tipo_riga, testo_libero,
           tipologia_apertura, larghezza_mm, altezza_mm, extra_colore_nome, extra_colore_percentuale,
           righe_flag(flag_id)`,
@@ -2683,6 +2712,7 @@ export default function ComponiPreventivoPage() {
         posa_tipo: orig.posa_tipo,
         posa_manuale: orig.posa_manuale,
         posa_riga_separata: orig.posa_riga_separata,
+        posa_inclusa_flag: orig.posa_inclusa_flag ?? false,
         modalita_mq: orig.modalita_mq,
         mq_diretti: orig.mq_diretti,
         riferimento_interno: orig.riferimento_interno,
@@ -2716,22 +2746,18 @@ export default function ComponiPreventivoPage() {
         if (flagError) throw new Error(flagError.message);
       }
 
-      // Duplicando un prodotto con posa separata: crea nuova riga posa (non copia quella legata).
+      // Duplicando un prodotto con posa: crea nuova riga posa (non copia quella legata).
       for (let i = 0; i < righeOrig.length; i++) {
         const orig = righeOrig[i];
-        if (
-          orig.tipo_riga === "posa" ||
-          !orig.posa_riga_separata ||
-          !orig.posa ||
-          !(Number(orig.posa_importo) > 0)
-        ) {
+        if (orig.tipo_riga === "posa" || !orig.posa) {
           continue;
         }
         await syncRigaPosaSeparata(supabase, {
           preventivoId: Number(preventivoId),
           parentRigaId: nuove[i].id,
-          posaSeparata: true,
-          importoPosaTotale: Number(orig.posa_importo),
+          posaAttiva: true,
+          posaSeparata: orig.posa_riga_separata === true,
+          importoPosaTotale: Number(orig.posa_importo ?? 0),
           quantita: Number(orig.quantita) || 1,
         });
       }

@@ -642,7 +642,7 @@ function resetCampiProdotto(
   setFlagEsclusivi: (v: Record<number, string>) => void,
   setFlagMultipli: (v: Record<number, boolean>) => void,
   setPosizioni: (v: PosizioneForm[]) => void,
-  posaDefault = false,
+  posaDefault = true,
 ) {
   setLarghezza("");
   setAltezza("");
@@ -1138,7 +1138,7 @@ function PreventivoCategoriaForm() {
   const [altezza, setAltezza] = useState("");
   const [lunghezza, setLunghezza] = useState("");
   const [quantita, setQuantita] = useState("1");
-  const [posa, setPosa] = useState(false);
+  const [posa, setPosa] = useState(true);
   const [posaTipo, setPosaTipo] = useState<PosaTipo>("ristrutturazione");
   const [posaManuale, setPosaManuale] = useState(false);
   const [posaImporto, setPosaImporto] = useState("");
@@ -1777,10 +1777,8 @@ function PreventivoCategoriaForm() {
           setDescrizioneCliente(
             sanitizeDescrizioneHtml(solo.descrizione_cliente ?? ""),
           );
-          if (isCategoriaPosaAvanzata(categoriaResult.data.nome)) {
-            setPosa(true);
-          }
-        } else if (isCategoriaPosaAvanzata(categoriaResult.data.nome)) {
+          setPosa(true);
+        } else {
           setPosa(true);
         }
       } catch (err) {
@@ -2068,7 +2066,7 @@ function PreventivoCategoriaForm() {
     setAltezza("");
     setLunghezza("");
     setQuantita("1");
-    setPosa(isPosaAvanzata);
+    setPosa(true);
     setPosaTipo(posaTipoDefault(nomeCategoria));
     setPosaManuale(false);
     setPosaImporto("");
@@ -2158,7 +2156,7 @@ function PreventivoCategoriaForm() {
       setFlagEsclusivi,
       setFlagMultipli,
       setPosizioni,
-      isPosaAvanzata,
+      true,
     );
     setModalitaMq("misure");
     setMqDiretti("");
@@ -2486,17 +2484,14 @@ function PreventivoCategoriaForm() {
       }
 
       try {
-        if (isPosaAvanzata) {
-          await syncRigaPosaSeparata(supabase, {
-            preventivoId: Number(preventivoId),
-            parentRigaId: editingRigaId,
-            posaSeparata: posa && posaRigaSeparata,
-            importoPosaTotale: calcolo.posa_importo ?? 0,
-            quantita: quantitaNum,
-          });
-        } else {
-          await removeRigaPosaPerParent(supabase, editingRigaId);
-        }
+        await syncRigaPosaSeparata(supabase, {
+          preventivoId: Number(preventivoId),
+          parentRigaId: editingRigaId,
+          posaAttiva: !!posa,
+          posaSeparata: isPosaAvanzata && posa && posaRigaSeparata,
+          importoPosaTotale: calcolo.posa_importo ?? 0,
+          quantita: quantitaNum,
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Errore riga posa");
         setSaving(false);
@@ -2685,22 +2680,21 @@ function PreventivoCategoriaForm() {
       }
     }
 
-    if (isPosaAvanzata) {
-      try {
-        for (let i = 0; i < nuoveRighe.length; i++) {
-          await syncRigaPosaSeparata(supabase, {
-            preventivoId: Number(preventivoId),
-            parentRigaId: nuoveRighe[i].id,
-            posaSeparata: posa && posaRigaSeparata,
-            importoPosaTotale: daInserire[i].calcolo.posa_importo ?? 0,
-            quantita: daInserire[i].quantitaNum,
-          });
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Errore riga posa");
-        setSaving(false);
-        return;
+    try {
+      for (let i = 0; i < nuoveRighe.length; i++) {
+        await syncRigaPosaSeparata(supabase, {
+          preventivoId: Number(preventivoId),
+          parentRigaId: nuoveRighe[i].id,
+          posaAttiva: !!posa,
+          posaSeparata: isPosaAvanzata && posa && posaRigaSeparata,
+          importoPosaTotale: daInserire[i].calcolo.posa_importo ?? 0,
+          quantita: daInserire[i].quantitaNum,
+        });
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Errore riga posa");
+      setSaving(false);
+      return;
     }
 
     await refreshTotali();
@@ -2782,20 +2776,19 @@ function PreventivoCategoriaForm() {
       }
     }
 
-    if (isPosaAvanzata) {
-      try {
-        await syncRigaPosaSeparata(supabase, {
-          preventivoId: Number(preventivoId),
-          parentRigaId: nuovaRiga.id,
-          posaSeparata: !!riga.posa && riga.posa_riga_separata === true,
-          importoPosaTotale: Number(riga.posa_importo ?? 0),
-          quantita: Number(riga.quantita) || 1,
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Errore riga posa");
-        setDuplicatingId(null);
-        return;
-      }
+    try {
+      await syncRigaPosaSeparata(supabase, {
+        preventivoId: Number(preventivoId),
+        parentRigaId: nuovaRiga.id,
+        posaAttiva: !!riga.posa,
+        posaSeparata: isPosaAvanzata && !!riga.posa && riga.posa_riga_separata === true,
+        importoPosaTotale: Number(riga.posa_importo ?? 0),
+        quantita: Number(riga.quantita) || 1,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Errore riga posa");
+      setDuplicatingId(null);
+      return;
     }
 
     await refreshTotali();
@@ -2987,7 +2980,7 @@ function PreventivoCategoriaForm() {
                     setFlagEsclusivi,
                     setFlagMultipli,
                     setPosizioni,
-                    isPosaAvanzata,
+                    true,
                   );
                 }
                 }}

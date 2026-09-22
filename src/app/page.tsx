@@ -364,7 +364,7 @@ export default function Home() {
         .select(
           `id, prodotto_id, larghezza_cm, altezza_cm, lunghezza_cm, quantita, posa, prezzo_riga,
           descrizione_libera, prezzo_libero, prezzo_inserito, regola_applicata,
-          posa_importo, posa_tipo, posa_manuale, posa_riga_separata, descrizione_tecnica,
+          posa_importo, posa_tipo, posa_manuale, posa_riga_separata, posa_inclusa_flag, descrizione_tecnica,
           descrizione_cliente, nota, colore, colore_interno, colore_esterno, colore_ferramenta, vetro, ordine, visibile_pdf, tipo_riga, testo_libero,
           modalita_mq, mq_diretti, numero_posizione, riferimento_interno, parent_riga_id,
           righe_flag(flag_id)`,
@@ -406,6 +406,7 @@ export default function Home() {
         posa_tipo: riga.posa_tipo,
         posa_manuale: riga.posa_manuale,
         posa_riga_separata: riga.posa_riga_separata,
+        posa_inclusa_flag: riga.posa_inclusa_flag ?? false,
         modalita_mq: riga.modalita_mq,
         mq_diretti: riga.mq_diretti,
         numero_posizione: riga.numero_posizione,

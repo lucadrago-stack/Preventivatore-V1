@@ -193,6 +193,8 @@ export type RigaConPosaDisplay = {
   /** true se la categoria usa posa avanzata e la posa è inclusa */
   posa_inclusa: boolean;
   posa_riga_separata: boolean;
+  /** Riga tipo_riga=posa con flag DB posa_inclusa_flag. */
+  posa_inclusa_flag?: boolean;
   nome_prodotto: string | null;
   quantita: number;
   descrizione: string;
@@ -244,8 +246,9 @@ export function espandiRighePdfCartaceo(
       continue;
     }
 
-    // Riga posa reale in DB: importo proprio, non virtuale.
+    // Riga posa reale in DB: importo proprio, oppure etichetta INCLUSA.
     if (riga.tipo_riga === "posa") {
+      const inclusa = riga.posa_inclusa_flag === true;
       risultato.push({
         key: riga.key,
         tipo_riga: "posa",
@@ -254,7 +257,8 @@ export function espandiRighePdfCartaceo(
         testo_libero: "",
         nota: riga.nota,
         prezzo_riga: riga.prezzo_riga,
-        importo_display: riga.prezzo_riga,
+        importo_display: inclusa ? null : riga.prezzo_riga,
+        importoEtichetta: inclusa ? "INCLUSA" : undefined,
         is_posa_virtuale: false,
       });
       continue;
@@ -313,6 +317,7 @@ export function espandiRigheConPosaSeparata(
     }
 
     if (riga.tipo_riga === "posa") {
+      const inclusa = riga.posa_inclusa_flag === true;
       risultato.push({
         key: riga.key,
         tipo_riga: "posa",
@@ -321,7 +326,8 @@ export function espandiRigheConPosaSeparata(
         testo_libero: "",
         nota: riga.nota,
         prezzo_riga: riga.prezzo_riga,
-        importo_display: riga.prezzo_riga,
+        importo_display: inclusa ? null : riga.prezzo_riga,
+        importoEtichetta: inclusa ? "INCLUSA" : undefined,
         is_posa_virtuale: false,
       });
       continue;

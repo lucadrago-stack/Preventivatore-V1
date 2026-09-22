@@ -10,6 +10,8 @@ export type RigaDbPerAggregazione = {
   posa_importo: number | null;
   posa: boolean | null;
   posa_riga_separata: boolean | null;
+  posa_inclusa_flag?: boolean | null;
+  parent_riga_id?: number | null;
   descrizione_cliente: string | null;
   descrizione_libera: string | null;
   descrizione_tecnica: string | null;
@@ -64,6 +66,8 @@ export type RigaAggregataComponi = {
   posa_importo: number | null;
   posa_inclusa: boolean;
   posa_riga_separata: boolean;
+  /** Riga tipo posa con importo mostrato come INCLUSA. */
+  posa_inclusa_flag: boolean;
   is_posa_avanzata: boolean;
   is_libera: boolean;
   descrizione: string;
@@ -245,10 +249,78 @@ export type OpzioniRaggruppaRighe = {
   normalizeDescrizioneHtml: (raw: string) => string;
 };
 
-/** Una sola riga posa in Componi/PDF per visibilità (descrizioni possono differire leggermente tra categorie). */
+/** Max 2 bucket in Componi/PDF: inclusa vs valorizzata. */
 function chiaveAggregazionePosa(riga: RigaDbPerAggregazione): string {
-  const visibile = riga.visibile_pdf ?? true;
-  return `posa|${visibile ? "1" : "0"}`;
+  return riga.posa_inclusa_flag === true ? "posa|i" : "posa|s";
+}
+
+/** Etichetta leggibile in nota posa (es. "infissi", "zanzariere"). */
+export function etichettaCategoriaPerNotaPosa(
+  nomeCategoria: string | null | undefined,
+  nomeProdotto: string | null | undefined,
+): string {
+  const cat = (nomeCategoria ?? "").trim().toLowerCase();
+  if (cat.includes("serrament")) return "infissi";
+  if (cat.includes("zanzari")) return "zanzariere";
+  if (cat.includes("persian")) return "persiane";
+  if (cat.includes("porte blindat")) return "porte blindate";
+  if (cat.includes("porte intern")) return "porte interne";
+  if (cat) return cat;
+
+  const p = (nomeProdotto ?? "").trim().toLowerCase();
+  if (p.includes("zanzari")) return "zanzariere";
+  if (
+    p.includes("infiss") ||
+    p.includes("pvc") ||
+    p.includes("legno") ||
+    p.includes("alluminio")
+  ) {
+    return "infissi";
+  }
+  if (p.includes("persian") || p.includes("scur")) return "persiane";
+  if (p.includes("blindat") || p.includes("portoncino")) return "porte blindate";
+  if (p) return p;
+  return "prodotti";
+}
+
+/** Es. "9 infissi, 2 zanzariere". */
+export function formatNotaPosaRiferimenti(
+  parti: Array<{ etichetta: string; quantita: number }>,
+): string {
+  const mappa = new Map<string, number>();
+  for (const p of parti) {
+    const q = Number(p.quantita) || 0;
+    if (q <= 0 || !p.etichetta) continue;
+    mappa.set(p.etichetta, (mappa.get(p.etichetta) ?? 0) + q);
+  }
+  return [...mappa.entries()]
+    .map(([etichetta, quantita]) => `${quantita} ${etichetta}`)
+    .join("\n");
+}
+
+function riferimentoPosaDaParent(
+  posaRiga: RigaDbPerAggregazione,
+  byId: Map<number, RigaDbPerAggregazione>,
+): { etichetta: string; quantita: number } | null {
+  const parent =
+    posaRiga.parent_riga_id != null
+      ? byId.get(posaRiga.parent_riga_id)
+      : null;
+  if (!parent) {
+    const q = Number(posaRiga.quantita) || 0;
+    return q > 0 ? { etichetta: "prodotti", quantita: q } : null;
+  }
+  const prodotto = normalizzaRelazione(parent.prodotti);
+  const categoria = prodotto?.categorie
+    ? normalizzaRelazione(prodotto.categorie)
+    : null;
+  return {
+    etichetta: etichettaCategoriaPerNotaPosa(
+      categoria?.nome,
+      prodotto?.nome,
+    ),
+    quantita: Number(parent.quantita) || Number(posaRiga.quantita) || 0,
+  };
 }
 
 /**
@@ -270,6 +342,12 @@ export function raggruppaRigheComponi(
   const risultato: RigaAggregataComponi[] = [];
   const indicePerProdotto = new Map<number, number>();
   const indicePerPosa = new Map<string, number>();
+  const byId = new Map(ordinate.map((r) => [r.id, r]));
+  /** Accumula riferimenti prodotti per nota posa (chiave aggregazione → parti). */
+  const riferimentiPosa = new Map<
+    string,
+    Array<{ etichetta: string; quantita: number }>
+  >();
 
   for (const riga of ordinate) {
     if (riga.tipo_riga === "testo") {
@@ -282,6 +360,7 @@ export function raggruppaRigheComponi(
         posa_importo: null,
         posa_inclusa: false,
         posa_riga_separata: false,
+        posa_inclusa_flag: false,
         is_posa_avanzata: false,
         is_libera: false,
         descrizione: "",
@@ -310,6 +389,11 @@ export function raggruppaRigheComponi(
 
     if (riga.tipo_riga === "posa") {
       const chiavePosa = chiaveAggregazionePosa(riga);
+      const rif = riferimentoPosaDaParent(riga, byId);
+      const listaRif = riferimentiPosa.get(chiavePosa) ?? [];
+      if (rif) listaRif.push(rif);
+      riferimentiPosa.set(chiavePosa, listaRif);
+
       const posaIdx = indicePerPosa.get(chiavePosa);
       if (posaIdx != null) {
         const aggPosa = risultato[posaIdx];
@@ -325,17 +409,18 @@ export function raggruppaRigheComponi(
         if (descrizioneNuova.length > aggPosa.descrizione.length) {
           aggPosa.descrizione = descrizioneNuova;
         }
-        const notaNuova = (riga.nota ?? "").trim();
-        if (notaNuova && !aggPosa.nota.trim()) {
-          aggPosa.nota = riga.nota ?? "";
+        if (riga.visibile_pdf !== false) {
+          aggPosa.visibile_pdf = true;
         }
+        aggPosa.nota = formatNotaPosaRiferimenti(listaRif);
         continue;
       }
 
       const nuovoIdx = risultato.length;
       indicePerPosa.set(chiavePosa, nuovoIdx);
+      const posaInclusaFlag = riga.posa_inclusa_flag === true;
       risultato.push({
-        key: `posa-${riga.id}`,
+        key: chiavePosa,
         prodotto_id: null,
         righeIds: [riga.id],
         quantita: Number(riga.quantita) || 0,
@@ -343,6 +428,7 @@ export function raggruppaRigheComponi(
         posa_importo: null,
         posa_inclusa: false,
         posa_riga_separata: false,
+        posa_inclusa_flag: posaInclusaFlag,
         is_posa_avanzata: false,
         is_libera: true,
         descrizione: descrizioneCommercialeDefault(
@@ -350,7 +436,7 @@ export function raggruppaRigheComponi(
           options.normalizeDescrizioneHtml,
         ),
         descrizione_tecnica: riga.descrizione_tecnica?.trim() || "Posa in opera",
-        nota: riga.nota ?? "",
+        nota: formatNotaPosaRiferimenti(listaRif),
         colore: "",
         colore_interno: "",
         colore_esterno: "",
@@ -382,6 +468,7 @@ export function raggruppaRigheComponi(
         posa_importo: riga.posa_importo,
         posa_inclusa: false,
         posa_riga_separata: false,
+        posa_inclusa_flag: false,
         is_posa_avanzata: false,
         is_libera: true,
         descrizione: descrizioneCommercialeDefault(
@@ -419,8 +506,9 @@ export function raggruppaRigheComponi(
     const isAvanzata = isRigaPosaAvanzata(riga);
     const posaImporto =
       isAvanzata && riga.posa ? Number(riga.posa_importo ?? 0) : 0;
-    const posaInclusa = isAvanzata && !!riga.posa && posaImporto > 0;
     const posaSeparata = isAvanzata && riga.posa_riga_separata === true;
+    // Nota "posa inclusa" anche se importo 0 (es. portoncino senza tariffa valorizzata).
+    const posaInclusa = isAvanzata && !!riga.posa && !posaSeparata;
     const quantita = Number(riga.quantita) || 0;
     const prezzoRiga =
       riga.prezzo_riga != null ? Number(riga.prezzo_riga) : null;
@@ -441,6 +529,7 @@ export function raggruppaRigheComponi(
         posa_importo: posaImporto,
         posa_inclusa: posaInclusa,
         posa_riga_separata: posaSeparata,
+        posa_inclusa_flag: false,
         is_posa_avanzata: isAvanzata,
         is_libera: false,
         descrizione: descrizioneCommercialeDefault(
@@ -515,6 +604,7 @@ export function raggruppaRigheComponi(
       posa_importo: posaImporto,
       posa_inclusa: posaInclusa,
       posa_riga_separata: posaSeparata,
+      posa_inclusa_flag: false,
       is_posa_avanzata: isAvanzata,
       is_libera: false,
       descrizione: descrizioneCommercialeDefault(
