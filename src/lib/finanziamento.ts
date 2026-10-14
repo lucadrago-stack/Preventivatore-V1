@@ -34,11 +34,18 @@ export type ConvenzioneFinanziamento = {
 };
 
 export type DettaglioDoppioPiano = {
-  capitaleMeta: number;
+  /** Mesi della prima fase (metà durata). */
+  mesiPrima: number;
+  /** Mesi della seconda fase. */
+  mesiSeconda: number;
+  /** Rata mensile nei primi `mesiPrima` mesi. */
   rataPrimaMeta: number;
+  /** Rata mensile negli ultimi `mesiSeconda` mesi. */
   rataSecondaMeta: number;
   tanPrimaMeta: number;
   tanSecondaMeta: number;
+  /** Capitale residuo all'inizio della seconda fase. */
+  capitaleResiduoSecondaMeta: number;
 };
 
 export type SimulazioneConvenzione = {
@@ -148,6 +155,28 @@ export function calcolaRataFrancese(
   return round2((capitale * i) / fattore);
 }
 
+/** Capitale residuo dopo N rate francesi a rata fissa. */
+export function capitaleResiduoDopoNRate(
+  capitale: number,
+  tanPercentuale: number,
+  rata: number,
+  numRate: number,
+): number {
+  if (!Number.isFinite(capitale) || capitale <= 0) return 0;
+  if (!Number.isFinite(numRate) || numRate <= 0) return round2(capitale);
+  const i =
+    Number.isFinite(tanPercentuale) && tanPercentuale > 0
+      ? tanPercentuale / 100 / 12
+      : 0;
+  let saldo = capitale;
+  for (let k = 0; k < numRate; k++) {
+    const interesse = saldo * i;
+    const quotaCapitale = Math.min(saldo, Math.max(0, rata - interesse));
+    saldo = Math.max(0, saldo - quotaCapitale);
+  }
+  return round2(saldo);
+}
+
 export function applicaMaggiorazione(
   baseIvato: number,
   regola: RegolaMaggiorazione,
@@ -177,10 +206,37 @@ export function applicaMaggiorazione(
 }
 
 /**
- * Doppio piano: nessuna maggiorazione.
- * importoFinanziato = ivato − anticipo (senza istruttoria)
- * capitaleRata = importoFinanziato + istruttoria → solo per la rata
- * rata = francese(C/2, tan_prima_meta) + francese(C/2, tan)
+ * True se, senza assorbimento, la convenzione applicherebbe la maggiorazione
+ * (regola `sempre`, oppure `sopra_soglia` con IVATO > soglia).
+ * Usato per mostrare il checkbox "Assorbi maggiorazione".
+ */
+export function maggiorazionePrevistaPerConvenzione(
+  baseIvato: number,
+  convenzione: Pick<
+    ConvenzioneFinanziamento,
+    "regola_maggiorazione" | "doppio_piano" | "famiglia"
+  >,
+  config: Pick<
+    ConfigFinanziamento,
+    "maggiorazione_perc" | "soglia_tasso_zero_gratis"
+  >,
+): boolean {
+  if (convenzione.doppio_piano || convenzione.famiglia === "doppio_piano") {
+    return false;
+  }
+  return applicaMaggiorazione(
+    baseIvato,
+    convenzione.regola_maggiorazione,
+    config.maggiorazione_perc,
+    config.soglia_tasso_zero_gratis,
+  ).applicata;
+}
+
+/**
+ * Doppio piano sequenziale: nessuna maggiorazione.
+ * - primi metà mesi: rata al TAN `tan_prima_meta` (calcolata su tutta la durata)
+ * - seconda metà mesi: rata sul capitale residuo al TAN `tan`
+ * importoFinanziato = ivato − anticipo; capitaleRata = finanziato + istruttoria
  */
 export function simulaDoppioPiano(params: {
   baseIvato: number;
@@ -193,21 +249,27 @@ export function simulaDoppioPiano(params: {
   const importoFatturato = round2(Math.max(0, baseIvato));
   const importoFinanziato = round2(Math.max(0, importoFatturato - anticipo));
   const capitaleRata = round2(importoFinanziato + config.istruttoria);
-  const capitaleMeta = round2(capitaleRata / 2);
+  const mesiPrima = Math.max(1, Math.floor(convenzione.durata_mesi / 2));
+  const mesiSeconda = Math.max(1, convenzione.durata_mesi - mesiPrima);
   const tanPrimaMeta = Number(convenzione.tan_prima_meta) || 0;
   const tanSecondaMeta = Number(convenzione.tan) || 0;
 
   const rataPrimaMeta = calcolaRataFrancese(
-    capitaleMeta,
+    capitaleRata,
     tanPrimaMeta,
     convenzione.durata_mesi,
   );
-  const rataSecondaMeta = calcolaRataFrancese(
-    capitaleMeta,
-    tanSecondaMeta,
-    convenzione.durata_mesi,
+  const capitaleResiduoSecondaMeta = capitaleResiduoDopoNRate(
+    capitaleRata,
+    tanPrimaMeta,
+    rataPrimaMeta,
+    mesiPrima,
   );
-  const rataMensile = round2(rataPrimaMeta + rataSecondaMeta);
+  const rataSecondaMeta = calcolaRataFrancese(
+    capitaleResiduoSecondaMeta,
+    tanSecondaMeta,
+    mesiSeconda,
+  );
 
   const costoDealer = round2(
     (config.costo_dealer_perc / 100) * capitaleRata,
@@ -226,18 +288,21 @@ export function simulaDoppioPiano(params: {
     importoFinanziato,
     capitaleRata,
     istruttoria: config.istruttoria,
-    rataMensile,
+    /** Per compatibilità: rata della prima fase. */
+    rataMensile: rataPrimaMeta,
     tan: tanSecondaMeta,
     durataMesi: convenzione.durata_mesi,
     margineBds,
     possibile: true,
     messaggio: null,
     doppioPiano: {
-      capitaleMeta,
+      mesiPrima,
+      mesiSeconda,
       rataPrimaMeta,
       rataSecondaMeta,
       tanPrimaMeta,
       tanSecondaMeta,
+      capitaleResiduoSecondaMeta,
     },
   };
 }

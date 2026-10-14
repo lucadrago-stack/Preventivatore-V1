@@ -33,7 +33,6 @@ import {
 } from "@/lib/riga-posa";
 import {
   composiNotaConCaratteristiche,
-  isPosaCertificataInclusaSuRiga,
   righeAutomaticheNota,
 } from "@/lib/caratteristiche-riga";
 import {
@@ -552,7 +551,6 @@ function RigaRow({
     coloreEsterno: riga.colore_esterno,
     coloreFerramenta: riga.colore_ferramenta,
     vetro: riga.vetro,
-    posaCertificataInclusa: isPosaCertificataInclusaSuRiga(riga),
   });
   const rowClass = [
     "border-b border-brand-border/70 even:bg-brand-surface/70",
@@ -1271,7 +1269,6 @@ export default function ComponiPreventivoPage() {
               coloreEsterno: riga.colore_esterno,
               coloreFerramenta: riga.colore_ferramenta,
               vetro: riga.vetro,
-              posaCertificataInclusa: isPosaCertificataInclusaSuRiga(riga),
             }),
             testo_libero: riga.testo_libero,
           })),

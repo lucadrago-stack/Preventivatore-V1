@@ -1246,11 +1246,15 @@ function drawPaginaInvestimento(
 
       const textX = bx + 4 + checkSize + 3.5;
       const tanLabel = card.doppioPiano
-        ? `TAN ${formatTanPdf(card.tanPrimaMeta ?? 0)} / ${formatTanPdf(card.tan)}`
+        ? `TAN ${formatTanPdf(card.tanPrimaMeta ?? 0)} → ${formatTanPdf(card.tan)}`
         : `TAN ${formatTanPdf(card.tan)}`;
       const anticipoLabel =
         card.anticipo > 0
           ? ` · anticipo all'ordine ${formatEuro(card.anticipo)}`
+          : "";
+      const fasiLabel =
+        card.doppioPiano && card.mesiPrima != null && card.mesiSeconda != null
+          ? ` · ${card.mesiPrima}+${card.mesiSeconda} mesi`
           : "";
 
       pdf.setFont("helvetica", "normal");
@@ -1261,8 +1265,8 @@ function drawPaginaInvestimento(
       pdf.text(mesiLabel, textX, rowY + 8.5);
       pdf.setFontSize(7.5);
       pdf.setTextColor(...I.muted);
-      const dettaglioSinistra = `  ·  ${tanLabel}${anticipoLabel}`;
-      const rataReserve = 32;
+      const dettaglioSinistra = `  ·  ${tanLabel}${fasiLabel}${anticipoLabel}`;
+      const rataReserve = card.doppioPiano ? 48 : 32;
       const maxDettaglioW = Math.max(
         20,
         bx + bw - 5 - rataReserve - (textX + mesiW + 1.5),
@@ -1275,15 +1279,24 @@ function drawPaginaInvestimento(
 
       const rightX = bx + bw - 5;
       pdf.setFont("helvetica", "bold");
-      pdf.setFontSize(12);
+      pdf.setFontSize(card.doppioPiano ? 9.5 : 12);
       pdf.setTextColor(...I.title);
-      pdf.text(formatEuro(card.rataMensile), rightX, rowY + 6, {
+      const rataLabel =
+        card.doppioPiano && card.rataSecondaMeta != null
+          ? `${formatEuro(card.rataMensile)} → ${formatEuro(card.rataSecondaMeta)}`
+          : formatEuro(card.rataMensile);
+      pdf.text(rataLabel, rightX, rowY + 6, {
         align: "right",
       });
       pdf.setFont("helvetica", "normal");
       pdf.setFontSize(7.5);
       pdf.setTextColor(...I.muted);
-      pdf.text("/mese", rightX, rowY + 11.5, { align: "right" });
+      pdf.text(
+        card.doppioPiano ? "/mese (1ª→2ª metà)" : "/mese",
+        rightX,
+        rowY + 11.5,
+        { align: "right" },
+      );
 
       rowY += rowH;
     });
@@ -1412,6 +1425,14 @@ export async function generaPaginaProdottiPdf(
     y = ensureSpace(pdf, y, 5 + 18);
     y = drawSectionTitle(pdf, "SERVIZI COMPLEMENTARI", y);
 
+    const noteColW = 36;
+    const importoColW = 24;
+    const descColW =
+      pdf.internal.pageSize.getWidth() -
+      MARGIN * 2 -
+      noteColW -
+      importoColW;
+
     autoTable(pdf, {
       ...TABLE_BASE,
       startY: y,
@@ -1422,15 +1443,43 @@ export async function generaPaginaProdottiPdf(
         etichettaImportoServizio(servizio.importo, servizio.nota),
       ]),
       columnStyles: {
-        0: { cellWidth: "auto", fontSize: 8 },
-        1: { cellWidth: 36, textColor: C.textMuted, fontSize: 7 },
+        0: {
+          cellWidth: descColW,
+          fontSize: 8,
+          halign: "left",
+          overflow: "linebreak",
+          valign: "top",
+        },
+        1: {
+          cellWidth: noteColW,
+          textColor: C.textMuted,
+          fontSize: 7,
+          overflow: "linebreak",
+          valign: "top",
+        },
         2: {
-          cellWidth: 24,
+          cellWidth: importoColW,
           halign: "right",
           fontStyle: "bold",
           fontSize: 8,
           textColor: C.navy,
+          valign: "top",
         },
+      },
+      didParseCell: (data) => {
+        // Stesso trattamento della Descrizione prodotti: word-wrap a capo
+        // parola e altezza riga che segue il testo (niente taglio/sovrapposizione).
+        if (data.section !== "body" || data.column.index !== 0) return;
+        const raw = String(data.cell.raw ?? "").trim() || "—";
+        const padL = Number(data.cell.padding("left")) || 1.5;
+        const padR = Number(data.cell.padding("right")) || 1.5;
+        const maxW = Math.max(4, descColW - padL - padR);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(data.cell.styles.fontSize || 8);
+        data.cell.text = pdf.splitTextToSize(raw, maxW);
+        data.cell.styles.halign = "left";
+        data.cell.styles.overflow = "linebreak";
+        data.cell.styles.valign = "top";
       },
     });
     y = getTableEndY(pdf) + 5;

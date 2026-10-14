@@ -249,7 +249,7 @@ export default function TabFinanziamento({
                       step="0.01"
                       title={
                         c.doppio_piano
-                          ? "TAN applicato alla prima metà del capitale"
+                          ? "TAN dei primi mesi (prima metà della durata)"
                           : "Rilevante solo con doppio piano"
                       }
                       className="w-20 rounded border border-brand-input-border px-2 py-1 disabled:bg-brand-surface disabled:text-brand-muted"
@@ -272,7 +272,7 @@ export default function TabFinanziamento({
                       step="0.01"
                       title={
                         c.doppio_piano
-                          ? "TAN della seconda metà / quota agevolata"
+                          ? "TAN degli ultimi mesi (seconda metà della durata)"
                           : "TAN della convenzione"
                       }
                       className="w-20 rounded border border-brand-input-border px-2 py-1"

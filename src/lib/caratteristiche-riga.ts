@@ -1,5 +1,3 @@
-export const DICITURA_POSA_CERTIFICATA_INCLUSA =
-  "Posa certificata Posaclima inclusa";
 export const DICITURA_ANTA_RIBALTA_MICROCIRCOLO =
   "Anta a ribalta e microcircolo incluso";
 
@@ -10,14 +8,12 @@ export type OpzioniNotaAutomatica = {
   coloreEsterno?: string | null;
   coloreFerramenta?: string | null;
   vetro?: string | null;
-  /** Posa inclusa nel prezzo prodotto (non riga posa separata). */
-  posaCertificataInclusa?: boolean;
 };
 
 /**
- * Righe automatiche per la colonna NOTE (PDF e anteprima Componi).
+ * Righe automatiche per la colonna NOTE del prodotto (PDF e anteprima Componi).
+ * Solo caratteristiche prodotto — niente riferimenti alla posa (ha riga dedicata).
  * Non sovrascrivono la nota scritta a mano.
- * Griglia: niente tipologie/misure/extra in nota (solo colore/vetro/posa come gli altri infissi).
  */
 export function righeAutomaticheNota(opts: OpzioniNotaAutomatica): string[] {
   const parti: string[] = [];
@@ -48,10 +44,6 @@ export function righeAutomaticheNota(opts: OpzioniNotaAutomatica): string[] {
     if (col) parti.push(`Colore: ${col}`);
   }
 
-  if (opts.posaCertificataInclusa) {
-    parti.push(DICITURA_POSA_CERTIFICATA_INCLUSA);
-  }
-
   return parti;
 }
 
@@ -75,12 +67,4 @@ export function composiNotaConCaratteristiche(
   if (nota) parti.push(nota);
   parti.push(...righeAutomaticheNota(opts));
   return parti.join("\n");
-}
-
-/** True se la posa è inclusa nel prodotto (non come riga separata). */
-export function isPosaCertificataInclusaSuRiga(riga: {
-  posa_inclusa?: boolean;
-  posa_riga_separata?: boolean;
-}): boolean {
-  return riga.posa_inclusa === true && riga.posa_riga_separata !== true;
 }

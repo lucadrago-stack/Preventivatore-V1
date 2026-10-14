@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
+import {
+  Fragment,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Button,
   Breadcrumb,
@@ -383,6 +391,8 @@ type PosizioneForm = {
   tipologia_apertura: TipologiaAperturaGriglia | "";
   larghezzaMm: string;
   altezzaMm: string;
+  /** Uso interno per questa posizione (non PDF / non Componi). */
+  riferimentoInterno: string;
 };
 
 let posizioneKeySeq = 0;
@@ -398,6 +408,7 @@ function creaPosizioneVuota(): PosizioneForm {
     tipologia_apertura: "",
     larghezzaMm: "",
     altezzaMm: "",
+    riferimentoInterno: "",
   };
 }
 
@@ -658,6 +669,7 @@ function TabellaPosizioniMultiple({
   minimo,
   posizioni,
   calcoli,
+  errori,
   totale,
   onChange,
   onAdd,
@@ -668,6 +680,8 @@ function TabellaPosizioniMultiple({
   minimo: number | null;
   posizioni: PosizioneForm[];
   calcoli: (RisultatoCalcoloRiga | null)[];
+  /** Errori listino griglia (range real min/max) per posizione. */
+  errori?: (string | null)[];
   totale: number | null;
   onChange: (key: string, field: keyof PosizioneForm, value: string) => void;
   onAdd: () => void;
@@ -676,13 +690,15 @@ function TabellaPosizioniMultiple({
 }) {
   const isMq = tipo === "mq";
   const isGriglia = tipo === "griglia";
+  const colSpan =
+    (isGriglia ? 3 : isMq ? 2 : 1) + 4; /* misure + qty + rif + prezzo + azioni */
 
   return (
     <div className="space-y-3 sm:col-span-2">
       <div className="overflow-x-auto">
         <table
           className={`w-full text-left text-sm ${
-            isGriglia ? "min-w-[48rem]" : "min-w-[36rem]"
+            isGriglia ? "min-w-[56rem]" : "min-w-[44rem]"
           }`}
         >
           <thead className="text-brand-muted">
@@ -702,6 +718,9 @@ function TabellaPosizioniMultiple({
                 <th className="pb-2 pr-2 font-medium">Lunghezza (cm)</th>
               )}
               <th className="w-24 pb-2 pr-2 font-medium">Quantità</th>
+              <th className="min-w-[9rem] pb-2 pr-2 font-medium">
+                Rif. interno
+              </th>
               <th className="pb-2 pr-2 font-medium">
                 {isGriglia ? "Prezzo" : isMq ? "Mq / Prezzo" : "Ml / Prezzo"}
               </th>
@@ -711,6 +730,7 @@ function TabellaPosizioniMultiple({
           <tbody>
             {posizioni.map((posizione, index) => {
               const calcolo = calcoli[index];
+              const errorePos = errori?.[index] ?? null;
               const mq =
                 isMq && calcolo?.valido ? calcolo.mq : null;
               const ml =
@@ -726,7 +746,8 @@ function TabellaPosizioniMultiple({
                 mq < minimo;
 
               return (
-                <tr key={posizione.key} className="align-top">
+                <Fragment key={posizione.key}>
+                <tr className="align-top">
                   {isGriglia ? (
                     <>
                       <td className="py-1.5 pr-2">
@@ -848,6 +869,22 @@ function TabellaPosizioniMultiple({
                       className={inputControlClass}
                     />
                   </td>
+                  <td className="py-1.5 pr-2">
+                    <input
+                      type="text"
+                      aria-label={`Riferimento interno posizione ${index + 1}`}
+                      value={posizione.riferimentoInterno}
+                      onChange={(e) =>
+                        onChange(
+                          posizione.key,
+                          "riferimentoInterno",
+                          e.target.value,
+                        )
+                      }
+                      placeholder="es. bagno"
+                      className={inputControlClass}
+                    />
+                  </td>
                   <td className="py-1.5 pr-2 text-sm text-brand-muted">
                     {calcolo?.valido ? (
                       <div className="pt-2">
@@ -894,6 +931,16 @@ function TabellaPosizioniMultiple({
                     )}
                   </td>
                 </tr>
+                {errorePos && (
+                  <tr>
+                    <td colSpan={colSpan} className="pb-2 pr-2">
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Posizione {index + 1}: {errorePos}
+                      </p>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -906,6 +953,9 @@ function TabellaPosizioniMultiple({
       >
         + Aggiungi posizione
       </button>
+      <p className="text-xs text-brand-muted">
+        Rif. interno: solo uso interno, non compare nel PDF né in Componi.
+      </p>
       {totale != null && (
         <p className="text-sm font-medium text-brand-navy">
           Totale posizioni:{" "}
@@ -1215,6 +1265,7 @@ function PreventivoCategoriaForm() {
           p.tipologia_apertura ||
           p.larghezzaMm.trim() ||
           p.altezzaMm.trim() ||
+          p.riferimentoInterno.trim() ||
           (p.quantita.trim() !== "" && p.quantita.trim() !== "1"),
       ),
   );
@@ -1952,6 +2003,20 @@ function PreventivoCategoriaForm() {
     calcolaPrezzoBdsGrigliaPosizione,
   ]);
 
+  /** Errori listino (range reali da celle) per ogni posizione griglia. */
+  const erroriGrigliaPosizioni = useMemo(() => {
+    if (tipoTabella !== "griglia") return [] as (string | null)[];
+    return posizioni.map((posizione) => {
+      const parsed = parsePosizioneGriglia(posizione);
+      if (!parsed.valid || !parsed.tipologia) return null;
+      return calcolaPrezzoBdsGrigliaPosizione(
+        parsed.tipologia,
+        parsed.larghezzaMm,
+        parsed.altezzaMm,
+      ).errore;
+    });
+  }, [tipoTabella, posizioni, calcolaPrezzoBdsGrigliaPosizione]);
+
   const posizioniValide = useMemo(() => {
     if (!prodottoSelezionato || !tipoTabella) return [];
     return posizioni.flatMap((posizione, index) => {
@@ -2245,6 +2310,7 @@ function PreventivoCategoriaForm() {
         larghezzaMm:
           riga.larghezza_mm != null ? String(riga.larghezza_mm) : "",
         altezzaMm: riga.altezza_mm != null ? String(riga.altezza_mm) : "",
+        riferimentoInterno: riga.riferimento_interno ?? "",
       },
     ]);
     setError(null);
@@ -2512,6 +2578,7 @@ function PreventivoCategoriaForm() {
       quantitaNum: number;
       calcolo: RisultatoCalcoloRiga;
       prezzoInseritoRiga: number | null;
+      riferimentoInterno: string | null;
       payloadGrigliaRiga: {
         tipologia_apertura: string | null;
         larghezza_mm: number | null;
@@ -2525,10 +2592,12 @@ function PreventivoCategoriaForm() {
 
     if (tipoTabella) {
       if (haPosizioniIncomplete) {
+        const erroreRange = erroriGrigliaPosizioni.find((e) => e != null);
         setError(
-          tipoTabella === "griglia"
-            ? "Completa tipologia e misure di ogni posizione o rimuovila."
-            : "Completa le misure di ogni posizione o rimuovila.",
+          erroreRange ??
+            (tipoTabella === "griglia"
+              ? "Completa tipologia e misure di ogni posizione o rimuovila."
+              : "Completa le misure di ogni posizione o rimuovila."),
         );
         setSaving(false);
         return;
@@ -2538,6 +2607,7 @@ function PreventivoCategoriaForm() {
         return;
       }
       daInserire = posizioniValide.map(({ posizione, calcolo: calc }) => {
+        const rifPosizione = posizione.riferimentoInterno.trim() || null;
         if (tipoTabella === "griglia") {
           const parsed = parsePosizioneGriglia(posizione);
           const { listino } = calcolaPrezzoBdsGrigliaPosizione(
@@ -2556,6 +2626,7 @@ function PreventivoCategoriaForm() {
             quantitaNum: parsed.quantitaNum,
             calcolo: calc,
             prezzoInseritoRiga: listino,
+            riferimentoInterno: rifPosizione,
             payloadGrigliaRiga: {
               tipologia_apertura: parsed.tipologia || null,
               larghezza_mm: parsed.larghezzaMm || null,
@@ -2570,6 +2641,7 @@ function PreventivoCategoriaForm() {
           quantitaNum: parsed.quantitaNum,
           calcolo: calc,
           prezzoInseritoRiga: prezzoInserito,
+          riferimentoInterno: rifPosizione,
           payloadGrigliaRiga: {
             tipologia_apertura: null,
             larghezza_mm: null,
@@ -2607,6 +2679,7 @@ function PreventivoCategoriaForm() {
           quantitaNum,
           calcolo,
           prezzoInseritoRiga: prezzoInserito,
+          riferimentoInterno: riferimentoSalvato,
           payloadGrigliaRiga: payloadGrigliaSingola,
         },
       ];
@@ -2646,7 +2719,7 @@ function PreventivoCategoriaForm() {
           ? null
           : riga.misure.altezzaCm,
       lunghezza_cm: riga.misure.lunghezzaCm,
-      riferimento_interno: riferimentoSalvato,
+      riferimento_interno: riga.riferimentoInterno,
       ...payloadColori,
       ...riga.payloadGrigliaRiga,
       ...posaPayloadDaCalcolo(riga.calcolo),
@@ -3052,14 +3125,6 @@ function PreventivoCategoriaForm() {
               </div>
             )}
 
-            <Input
-              label="Riferimento interno"
-              value={riferimentoInterno}
-              onChange={(e) => setRiferimentoInterno(e.target.value)}
-              placeholder="es. camera matrimoniale, cod. fornitore XY123"
-              hint="Solo uso interno: non compare nel PDF né in Componi."
-              wrapperClassName="sm:col-span-2"
-            />
             {prodottoSelezionato?.ha_vetro ? (
               <>
                 <ComboboxLibero
@@ -3220,6 +3285,7 @@ function PreventivoCategoriaForm() {
                 minimo={null}
                 posizioni={posizioni}
                 calcoli={calcoliPosizioni}
+                errori={erroriGrigliaPosizioni}
                 totale={totaleAnteprima}
                 onChange={aggiornaPosizione}
                 onAdd={aggiungiPosizione}
@@ -3388,6 +3454,16 @@ function PreventivoCategoriaForm() {
                 inputMode="numeric"
                 value={quantita}
                 onChange={(e) => setQuantita(e.target.value)}
+              />
+            )}
+            {(!usaTabellaPosizioni || isModifica) && (
+              <Input
+                label="Riferimento interno"
+                value={riferimentoInterno}
+                onChange={(e) => setRiferimentoInterno(e.target.value)}
+                placeholder="es. camera matrimoniale, cod. fornitore XY123"
+                hint="Solo uso interno: non compare nel PDF né in Componi."
+                wrapperClassName="sm:col-span-2"
               />
             )}
           </FormBlock>

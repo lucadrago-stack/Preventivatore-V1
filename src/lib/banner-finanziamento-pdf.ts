@@ -42,6 +42,10 @@ export type CardDurataPdf = {
   titolo: string;
   durataMesi: number;
   rataMensile: number;
+  /** Solo doppio piano: rata della seconda metà mesi. */
+  rataSecondaMeta: number | null;
+  mesiPrima: number | null;
+  mesiSeconda: number | null;
   anticipo: number;
   tan: number;
   doppioPiano: boolean;
@@ -250,6 +254,9 @@ function cardDaSim(s: SimulazioneConvenzione): CardDurataPdf {
     titolo: titoloConvenzione(s.convenzione),
     durataMesi: s.durataMesi,
     rataMensile: s.rataMensile,
+    rataSecondaMeta: s.doppioPiano?.rataSecondaMeta ?? null,
+    mesiPrima: s.doppioPiano?.mesiPrima ?? null,
+    mesiSeconda: s.doppioPiano?.mesiSeconda ?? null,
     anticipo: s.anticipo,
     tan: s.tan,
     doppioPiano: Boolean(s.doppioPiano),

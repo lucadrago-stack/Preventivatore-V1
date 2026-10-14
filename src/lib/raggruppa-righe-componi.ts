@@ -507,7 +507,7 @@ export function raggruppaRigheComponi(
     const posaImporto =
       isAvanzata && riga.posa ? Number(riga.posa_importo ?? 0) : 0;
     const posaSeparata = isAvanzata && riga.posa_riga_separata === true;
-    // Nota "posa inclusa" anche se importo 0 (es. portoncino senza tariffa valorizzata).
+    // Posa ancora sull'importo prodotto (preventivi legacy senza riga tipo_riga=posa).
     const posaInclusa = isAvanzata && !!riga.posa && !posaSeparata;
     const quantita = Number(riga.quantita) || 0;
     const prezzoRiga =

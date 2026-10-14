@@ -9,6 +9,7 @@ import { IVA_ALIQUOTE, type IvaAliquota } from "@/lib/totali-preventivo";
 import {
   DEFAULT_FAMIGLIA_ALTERNATIVA,
   anticipoDefaultPerConvenzione,
+  maggiorazionePrevistaPerConvenzione,
   mapConvenzioneRow,
   mappaAnticipiDefault,
   parseConfigFinanziamento,
@@ -330,6 +331,13 @@ export default function SimulatorePage() {
             (sim.durataMesi === 20 && !sim.convenzione.doppio_piano);
           const anticipoCampo =
             anticipiRaw[sim.convenzione.id] ?? String(sim.anticipo);
+          const mostraAssorbi =
+            config != null &&
+            maggiorazionePrevistaPerConvenzione(
+              baseIvato,
+              sim.convenzione,
+              config,
+            );
 
           return (
             <div
@@ -360,11 +368,11 @@ export default function SimulatorePage() {
                   <p className="text-[10px] text-brand-muted">
                     {sim.maggiorazioneApplicata
                       ? `+${config.maggiorazione_perc}% maggiorazione`
-                      : assorbiMaggiorazione && !sim.doppioPiano
+                      : assorbiMaggiorazione && mostraAssorbi
                         ? "senza maggiorazione · assorbita"
                         : "senza maggiorazione"}
                   </p>
-                  {!sim.doppioPiano && (
+                  {mostraAssorbi && (
                     <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-brand-text">
                       <input
                         type="checkbox"
@@ -408,26 +416,64 @@ export default function SimulatorePage() {
                     </p>
                   )}
                 </div>
-                <div className="col-span-2 sm:col-span-1">
-                  <p className="text-[10px] uppercase tracking-wide text-brand-muted">
-                    Rata mensile
-                  </p>
-                  <p className="text-base font-bold tabular-nums text-brand-accent">
-                    {sim.possibile ? formatEuro(sim.rataMensile) : "—"}
-                  </p>
-                  <p className="text-[10px] text-brand-muted">
-                    {sim.durataMesi} rate
-                    {sim.doppioPiano
-                      ? " · doppio piano"
-                      : ` · TAN ${formatTan(sim.tan)}`}
-                  </p>
-                  {sim.possibile && sim.istruttoria > 0 && (
-                    <p className="mt-1 text-[10px] leading-snug text-brand-muted">
-                      Incl. {formatEuro(sim.istruttoria)} istruttoria (non
-                      fatturata BDS)
+                {sim.doppioPiano && sim.possibile ? (
+                  <div className="col-span-2 grid gap-2 sm:col-span-2 sm:grid-cols-2">
+                    <div className="rounded-md border-2 border-brand-navy bg-white px-3 py-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-navy">
+                        Primi {sim.doppioPiano.mesiPrima} mesi
+                      </p>
+                      <p className="text-base font-bold tabular-nums text-brand-accent">
+                        {formatEuro(sim.doppioPiano.rataPrimaMeta)}
+                        <span className="ml-1 text-[10px] font-normal text-brand-muted">
+                          /mese
+                        </span>
+                      </p>
+                      <p className="text-[10px] text-brand-muted">
+                        TAN {formatTan(sim.doppioPiano.tanPrimaMeta)} ·{" "}
+                        {sim.doppioPiano.mesiPrima} rate
+                      </p>
+                    </div>
+                    <div className="rounded-md border-2 border-brand-navy bg-white px-3 py-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-navy">
+                        Ultimi {sim.doppioPiano.mesiSeconda} mesi
+                      </p>
+                      <p className="text-base font-bold tabular-nums text-brand-accent">
+                        {formatEuro(sim.doppioPiano.rataSecondaMeta)}
+                        <span className="ml-1 text-[10px] font-normal text-brand-muted">
+                          /mese
+                        </span>
+                      </p>
+                      <p className="text-[10px] text-brand-muted">
+                        TAN {formatTan(sim.doppioPiano.tanSecondaMeta)} ·{" "}
+                        {sim.doppioPiano.mesiSeconda} rate
+                      </p>
+                    </div>
+                    {sim.istruttoria > 0 && (
+                      <p className="col-span-full text-[10px] leading-snug text-brand-muted">
+                        Incl. {formatEuro(sim.istruttoria)} istruttoria (non
+                        fatturata BDS)
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="col-span-2 sm:col-span-1">
+                    <p className="text-[10px] uppercase tracking-wide text-brand-muted">
+                      Rata mensile
                     </p>
-                  )}
-                </div>
+                    <p className="text-base font-bold tabular-nums text-brand-accent">
+                      {sim.possibile ? formatEuro(sim.rataMensile) : "—"}
+                    </p>
+                    <p className="text-[10px] text-brand-muted">
+                      {sim.durataMesi} rate · TAN {formatTan(sim.tan)}
+                    </p>
+                    {sim.possibile && sim.istruttoria > 0 && (
+                      <p className="mt-1 text-[10px] leading-snug text-brand-muted">
+                        Incl. {formatEuro(sim.istruttoria)} istruttoria (non
+                        fatturata BDS)
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {sim.messaggio && (

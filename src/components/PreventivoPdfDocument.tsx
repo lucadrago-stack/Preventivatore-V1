@@ -683,13 +683,23 @@ export default function PreventivoPdfDocument({
                     borderBottom: `1px solid ${BRAND.border}`,
                   }}
                 >
-                  <td style={{ padding: "8px 10px" }}>
+                  <td
+                    style={{
+                      padding: "8px 10px",
+                      verticalAlign: "top",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
                     {servizio.descrizione || "—"}
                   </td>
                   <td
                     style={{
                       width: 112,
                       padding: "8px 10px",
+                      verticalAlign: "top",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
                       color: BRAND.textMuted,
                       fontSize: 10,
                     }}
@@ -700,6 +710,7 @@ export default function PreventivoPdfDocument({
                     style={{
                       width: 96,
                       padding: "8px 10px",
+                      verticalAlign: "top",
                       textAlign: "right",
                       fontWeight: 700,
                       color: BRAND.navy,
