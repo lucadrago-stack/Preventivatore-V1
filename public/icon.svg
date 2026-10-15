@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16C0D8"/>
+      <stop offset="1" stop-color="#007A8C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Sfondo -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- Anta sinistra (chiara) -->
+  <path fill="#FFFFFF" fill-rule="evenodd"
+        d="M104 96 L236 148 L236 352 L104 404 Z M136 136 L136 364 L206 336 L206 164 Z"/>
+  <path fill="#FFFFFF" fill-opacity="0.14" d="M136 136 L206 164 L206 336 L136 364 Z"/>
+  <rect x="136" y="242" width="70" height="16" fill="#FFFFFF"/>
+
+  <!-- Anta destra (scura) -->
+  <path fill="#06505E" fill-rule="evenodd"
+        d="M376 96 L244 148 L244 352 L376 404 Z M344 136 L274 164 L274 336 L344 364 Z"/>
+  <path fill="#FFFFFF" fill-opacity="0.10" d="M344 136 L274 164 L274 336 L344 364 Z"/>
+  <rect x="274" y="242" width="70" height="16" fill="#06505E"/>
+
+  <!-- Badge preventivo -->
+  <circle cx="396" cy="396" r="84" fill="#FF6A3D" stroke="#FFFFFF" stroke-width="10"/>
+  <path fill="#FFFFFF"
+        d="M370 358 H405 L424 377 V434 Q424 438 420 438 H370 Q366 438 366 434 V362 Q366 358 370 358 Z"/>
+  <path fill="#FFD2C4" d="M405 358 L424 377 H409 Q405 377 405 373 Z"/>
+  <rect x="377" y="392" width="36" height="6" rx="3" fill="#FF6A3D"/>
+  <rect x="377" y="406" width="36" height="6" rx="3" fill="#FF6A3D"/>
+  <rect x="377" y="420" width="22" height="6" rx="3" fill="#FF6A3D"/>
+</svg>

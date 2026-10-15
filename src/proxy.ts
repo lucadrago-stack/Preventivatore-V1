@@ -66,6 +66,10 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|pdf-template/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    /*
+     * Esclude asset statici: senza cookie il browser andrebbe a /login.
+     * Aggiunto manifest.json (le estensioni png/svg/ico erano già escluse).
+     */
+    "/((?!_next/static|_next/image|favicon.ico|manifest.json|pdf-template/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
